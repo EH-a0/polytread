@@ -1,0 +1,34 @@
+target/
+data/
+results/
+*.log
+*.pdb
+*.rlib
+*.o
+*.bin
+
+# Secrets and operator-local configuration.
+.env
+.env.*
+*.env
+*.env.*
+!*.env.example
+private/
+certs/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Editor and local tooling.
+npm/native/
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Scratch files.
+*.tmp

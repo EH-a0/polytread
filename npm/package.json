@@ -1,0 +1,33 @@
+{
+  "name": "polytread",
+  "version": "0.2.0",
+  "description": "Secure installer and launcher for the PolyTread local Polymarket dashboard",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/EH-a0/polytread.git"
+  },
+  "homepage": "https://github.com/EH-a0/polytread#readme",
+  "bugs": "https://github.com/EH-a0/polytread/issues",
+  "bin": {
+    "polytread": "bin/polytread.js"
+  },
+  "files": [
+    "bin",
+    "scripts",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "check": "node --check bin/polytread.js && node --check scripts/install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "polymarket",
+    "trading",
+    "rust",
+    "local-dashboard"
+  ]
+}

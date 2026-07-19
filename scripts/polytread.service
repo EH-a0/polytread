@@ -1,0 +1,24 @@
+[Unit]
+Description=PolyTread lightweight trading service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=polytread
+Group=polytread
+WorkingDirectory=/opt/polytread
+Environment=POLYTREAD_BIND=127.0.0.1:9878
+Environment=POLYTREAD_DATA_DIR=/var/lib/polytread
+EnvironmentFile=-/etc/polytread.env
+ExecStart=/opt/polytread/polytread serve
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/polytread
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PolyTread</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #091018;
+      --panel: #111b27;
+      --panel2: #162332;
+      --line: #26384b;
+      --text: #e9f1f9;
+      --muted: #8ca0b5;
+      --green: #39d98a;
+      --red: #ff647c;
+      --blue: #62a8ff;
+      --amber: #f4bb55;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top, #142439 0, var(--bg) 42rem);
+      color: var(--text);
+      font: 14px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
+    }
+    button, input, a { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .42; }
+    .shell { width: min(1180px, calc(100% - 28px)); margin: 0 auto; padding: 20px 0 42px; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+    .brand { font-size: 21px; font-weight: 800; letter-spacing: -.03em; }
+    .brand span { color: var(--blue); }
+    .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 12px currentColor; }
+    .dot.live { background: var(--green); }
+    .grid { display: grid; gap: 14px; }
+    .prices { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    .two { grid-template-columns: minmax(0, 1.55fr) minmax(300px, .85fr); margin-top: 14px; }
+    .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 14px; padding: 15px; box-shadow: 0 18px 45px rgba(0,0,0,.18); }
+    .kicker { color: var(--muted); text-transform: uppercase; font-size: 10px; font-weight: 800; letter-spacing: .11em; }
+    .value { margin-top: 7px; font: 750 24px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .value.up { color: var(--green); }
+    .value.down { color: var(--red); }
+    .value.positive { color: var(--green); }
+    .value.negative { color: var(--red); }
+    .session { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 14px; }
+    .session h1 { margin: 4px 0 2px; font-size: 20px; }
+    .session p { margin: 0; color: var(--muted); }
+    .countdown { text-align: right; font: 750 22px ui-monospace, SFMono-Regular, Consolas, monospace; }
+    canvas { width: 100%; height: 210px; display: block; border-radius: 10px; background: #0b141e; margin-top: 10px; }
+    .legend { display: flex; gap: 16px; color: var(--muted); font-size: 11px; margin-top: 9px; }
+    .legend i { display: inline-block; width: 10px; height: 3px; margin-right: 5px; vertical-align: middle; }
+    .trade-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .arm { border: 1px solid var(--line); border-radius: 999px; background: var(--panel2); color: var(--text); padding: 8px 12px; }
+    .arm.on { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, var(--line)); }
+    .notice { margin: 12px 0; padding: 10px 11px; border-radius: 9px; background: #0b141e; color: var(--muted); font-size: 12px; min-height: 42px; }
+    .options { display: flex; flex-wrap: wrap; gap: 7px; margin: 9px 0 13px; }
+    .choice { border: 1px solid var(--line); background: var(--panel2); color: var(--muted); border-radius: 8px; padding: 7px 10px; }
+    .choice.active { border-color: var(--blue); color: var(--text); background: #173151; }
+    .orders { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .order { border: 0; border-radius: 9px; padding: 10px 8px; color: #07110c; font-weight: 800; background: var(--green); }
+    .order.sell { color: #1b070b; background: var(--red); }
+    .balances { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; margin-top: 12px; }
+    .table-panel { margin-top: 14px; overflow: hidden; }
+    .table-wrap { overflow-x: auto; margin-top: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; }
+    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+    td { font-size: 12px; }
+    .empty { color: var(--muted); text-align: center; padding: 18px; }
+    .feeds { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+    .feed { border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; color: var(--muted); font-size: 11px; }
+    .feed.live { color: var(--green); }
+    .claim-action { display: inline-block; border: 1px solid var(--blue); border-radius: 7px; background: #173151; color: var(--text); padding: 6px 9px; text-decoration: none; }
+    .claim-action.external { border-color: var(--line); background: var(--panel2); }
+    .claim-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    .hash { max-width: 180px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
+    .hash a { color: var(--blue); }
+    @media (max-width: 840px) {
+      .prices { grid-template-columns: 1fr 1fr 1fr; }
+      .two { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 500px) {
+      .shell { width: min(100% - 18px, 1180px); }
+      .value { font-size: 19px; }
+      .orders { grid-template-columns: 1fr; }
+      .prices { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="brand">Poly<span>Tread</span></div>
+    <div class="status"><span id="connection-dot" class="dot"></span><span id="connection-label">Connecting</span></div>
+  </header>
+
+  <section class="grid prices">
+    <div class="panel"><div class="kicker">Bitcoin · Chainlink</div><div class="value" id="chainlink-price">—</div></div>
+    <div class="panel"><div class="kicker">Bitcoin · Binance</div><div class="value" id="binance-price">—</div></div>
+    <div class="panel"><div class="kicker">UP token</div><div class="value up" id="up-price">—</div></div>
+    <div class="panel"><div class="kicker">DOWN token</div><div class="value down" id="down-price">—</div></div>
+    <div class="panel"><div class="kicker">Current open PnL</div><div class="value" id="current-pnl">—</div></div>
+    <div class="panel"><div class="kicker">Today realized · UTC</div><div class="value" id="daily-pnl">—</div></div>
+  </section>
+
+  <section class="grid two">
+    <div class="panel">
+      <div class="session">
+        <div><div class="kicker">Current BTC five-minute market</div><h1 id="session-title">Waiting for discovery</h1><p id="target-price">Price to beat —</p></div>
+        <div><div class="countdown" id="countdown">--:--</div><div class="kicker" id="session-slug"></div></div>
+      </div>
+      <div class="kicker">One-second price history</div>
+      <canvas id="price-chart" width="900" height="260"></canvas>
+      <div class="legend"><span><i style="background:#62a8ff"></i>Chainlink</span><span><i style="background:#f4bb55"></i>Binance</span><span><i style="background:#39d98a"></i>UP</span><span><i style="background:#ff647c"></i>DOWN</span></div>
+      <div class="feeds" id="feeds"></div>
+    </div>
+
+    <div class="panel">
+      <div class="trade-head"><div><div class="kicker">Operator-controlled trading</div><strong>Manual orders</strong></div><button id="arm" class="arm">Trading off</button></div>
+      <div id="trade-notice" class="notice">Waiting for the backend.</div>
+      <div class="kicker">Amount</div>
+      <div class="options" id="nominals"></div>
+      <div class="kicker">Execution</div>
+      <div class="options"><button class="choice active" data-mechanism="taker">Fast taker</button><button class="choice" data-mechanism="maker">Fast maker</button></div>
+      <div class="orders">
+        <button class="order" data-side="buy_up">Buy UP</button>
+        <button class="order sell" data-side="sell_up">Sell UP</button>
+        <button class="order" data-side="buy_down">Buy DOWN</button>
+        <button class="order sell" data-side="sell_down">Sell DOWN</button>
+      </div>
+      <div class="balances"><span id="balance">Balance —</span><span id="allowance">Allowance —</span></div>
+    </div>
+  </section>
+
+  <section class="panel table-panel">
+    <div class="kicker">Past trades</div>
+    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Mode</th><th>Price</th><th>Shares</th><th>Status</th></tr></thead><tbody id="trades"></tbody></table></div>
+  </section>
+
+  <section class="panel table-panel">
+    <div class="kicker">Manual claims only</div>
+    <div id="claim-status" class="notice">Waiting for portfolio data.</div>
+    <div class="claim-note" id="claim-note"></div>
+    <div class="table-wrap"><table><thead><tr><th>Market</th><th>Outcome</th><th>Shares</th><th>Redeemable</th><th>PnL</th><th>Action</th></tr></thead><tbody id="claims"></tbody></table></div>
+  </section>
+
+  <section class="panel table-panel">
+    <div class="kicker">Claim history</div>
+    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Market</th><th>Transaction</th></tr></thead><tbody id="claim-history"></tbody></table></div>
+  </section>
+
+  <section class="panel table-panel">
+    <div class="kicker">Past sessions</div>
+    <div class="table-wrap"><table><thead><tr><th>Start</th><th>Market</th><th>Price to beat</th><th>Window</th></tr></thead><tbody id="sessions"></tbody></table></div>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const nominals = [.5, 1, 2, 3, 4, 5];
+let snapshot = null;
+let selectedNominal = 1;
+let selectedMechanism = "taker";
+let connected = false;
+let commandSocket = null;
+let dashboardAuthenticated = false;
+let events = null;
+
+function money(value, decimals = 2) {
+  return Number.isFinite(value) ? `$${Number(value).toLocaleString(undefined, {minimumFractionDigits: decimals, maximumFractionDigits: decimals})}` : "—";
+}
+function tokenPrice(value) { return Number.isFinite(value) ? Number(value).toFixed(3) : "—"; }
+function timeLabel(value) { return Number.isFinite(value) ? new Date(value).toLocaleString() : "—"; }
+function requestId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+
+function renderPnl(id, value) {
+  const element = $(id);
+  element.textContent = money(value);
+  element.classList.toggle("positive", Number.isFinite(value) && value > 0);
+  element.classList.toggle("negative", Number.isFinite(value) && value < 0);
+}
+
+function sendCommand(command) {
+  if (!dashboardAuthenticated) {
+    $("trade-notice").textContent = "Dashboard access is not authenticated. Open the current link printed by PolyTread.";
+    return;
+  }
+  const envelope = JSON.stringify({request_id: requestId(), command});
+  if (commandSocket && commandSocket.readyState === WebSocket.OPEN) {
+    commandSocket.send(envelope);
+    return;
+  }
+  fetch("/cmd", {method: "POST", headers: {"Content-Type": "application/json"}, body: envelope})
+    .then(response => response.json())
+    .then(ack => { if (!ack.ok) throw new Error(ack.error || "command rejected"); })
+    .catch(error => $("trade-notice").textContent = error.message);
+}
+
+function connectCommands() {
+  if (!dashboardAuthenticated) return;
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  commandSocket = new WebSocket(`${scheme}://${location.host}/command-ws`);
+  commandSocket.onclose = () => {
+    if (dashboardAuthenticated) setTimeout(connectCommands, 1500);
+  };
+  commandSocket.onerror = () => commandSocket.close();
+  commandSocket.onmessage = event => {
+    const ack = JSON.parse(event.data);
+    if (!ack.ok) $("trade-notice").textContent = ack.error || "Command rejected";
+  };
+}
+
+function submitClaim(position) {
+  if (!dashboardAuthenticated) {
+    $("claim-status").textContent = "Dashboard access is not authenticated. Open the current link printed by PolyTread.";
+    return;
+  }
+  const value = Number(position.redeemable_value_usd);
+  const prompt = `Claim ${money(value)} from ${position.title || position.condition_id}?\n\nThis sends an on-chain Polygon transaction and may first send a one-time adapter approval. POL gas is required.`;
+  if (!confirm(prompt)) return;
+  $("claim-status").textContent = "Queueing the explicitly confirmed manual claim...";
+  const envelope = JSON.stringify({request_id: requestId(), command: {
+    type: "claim_position",
+    payload: {
+      condition_id: position.condition_id,
+      expected_redeemable_value_usd: value
+    }
+  }});
+  fetch("/cmd", {method: "POST", headers: {"Content-Type": "application/json"}, body: envelope})
+    .then(response => response.json())
+    .then(ack => { if (!ack.ok) throw new Error(ack.error || "Claim rejected"); })
+    .catch(error => $("claim-status").textContent = error.message);
+}
+
+function renderNominals() {
+  $("nominals").innerHTML = nominals.map(value => `<button class="choice ${value === selectedNominal ? "active" : ""}" data-nominal="${value}">$${value.toFixed(2)}</button>`).join("");
+  document.querySelectorAll("[data-nominal]").forEach(button => button.onclick = () => {
+    selectedNominal = Number(button.dataset.nominal);
+    renderNominals();
+  });
+}
+
+document.querySelectorAll("[data-mechanism]").forEach(button => button.onclick = () => {
+  selectedMechanism = button.dataset.mechanism;
+  document.querySelectorAll("[data-mechanism]").forEach(candidate => candidate.classList.toggle("active", candidate === button));
+});
+
+$("arm").onclick = () => {
+  const enabled = !(snapshot && snapshot.trading && snapshot.trading.enabled);
+  sendCommand({type: "set_enabled", payload: {enabled}});
+};
+
+document.querySelectorAll("[data-side]").forEach(button => button.onclick = () => {
+  if (!snapshot || !snapshot.current_session) return;
+  const side = button.dataset.side;
+  const prompt = `${side.replace("_", " ").toUpperCase()} $${selectedNominal.toFixed(2)} using ${selectedMechanism}?`;
+  if (!confirm(prompt)) return;
+  sendCommand({type: "submit_order", payload: {
+    side,
+    nominal_usd: selectedNominal,
+    mechanism: selectedMechanism,
+    expected_session_slug: snapshot.current_session.slug
+  }});
+});
+
+function render(data) {
+  snapshot = data;
+  const session = data.current_session;
+  $("chainlink-price").textContent = money(data.chainlink_btc_usd);
+  $("binance-price").textContent = money(data.binance_btc_usd);
+  $("up-price").textContent = tokenPrice(data.up && (data.up.last_trade ?? midpoint(data.up)));
+  $("down-price").textContent = tokenPrice(data.down && (data.down.last_trade ?? midpoint(data.down)));
+  const portfolio = data.portfolio || {};
+  renderPnl("current-pnl", portfolio.current_open_pnl_usd);
+  renderPnl("daily-pnl", portfolio.today_realized_pnl_usd);
+  $("session-title").textContent = session ? session.title : "Waiting for a live market";
+  $("session-slug").textContent = session ? session.slug : "";
+  $("target-price").textContent = `Price to beat ${session ? money(session.price_to_beat) : "—"}`;
+  const remaining = session ? Math.max(0, session.end_ms - data.now_ms) : 0;
+  $("countdown").textContent = session ? `${String(Math.floor(remaining / 60000)).padStart(2,"0")}:${String(Math.floor((remaining % 60000) / 1000)).padStart(2,"0")}` : "--:--";
+
+  const trading = data.trading || {};
+  $("arm").textContent = trading.enabled ? "Trading armed" : "Trading off";
+  $("arm").classList.toggle("on", Boolean(trading.enabled));
+  $("arm").disabled = !connected || (!data.web_trading_allowed && !trading.enabled) || (!trading.configured && !trading.enabled);
+  $("trade-notice").textContent = !data.web_trading_allowed ? "Browser trading is disabled. Restart with --allow-web-trading to opt in." : (trading.order_status || "Ready");
+  $("balance").textContent = `Balance ${money(trading.available_usdc)}`;
+  $("allowance").textContent = `Allowance ${money(trading.allowance_usdc)}`;
+  const orderReady = connected && data.web_trading_allowed && trading.enabled && trading.configured && session && !trading.in_flight_intent;
+  document.querySelectorAll("[data-side]").forEach(button => button.disabled = !orderReady);
+
+  $("feeds").innerHTML = (data.feeds || []).map(feed => `<span class="feed ${feed.connected ? "live" : ""}">${escapeHtml(feed.feed)} · ${feed.connected ? "connected" : "offline"}</span>`).join("");
+  renderTrades(trading.ledger || []);
+  renderClaims(portfolio);
+  renderClaimHistory(portfolio.claim_history || []);
+  renderSessions(data.past_sessions || []);
+  drawChart(data.price_history || []);
+}
+
+function midpoint(quote) {
+  return quote && Number.isFinite(quote.best_bid) && Number.isFinite(quote.best_ask) ? (quote.best_bid + quote.best_ask) / 2 : (quote && (quote.best_ask ?? quote.best_bid));
+}
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[character]));
+}
+function renderTrades(rows) {
+  $("trades").innerHTML = rows.length ? rows.slice(0, 40).map(row => `<tr><td>${timeLabel(row.updated_at_ms)}</td><td>${escapeHtml(row.market_label)}</td><td>${escapeHtml(row.trade_side)}</td><td>${escapeHtml(row.mechanism)}</td><td>${tokenPrice(row.price)}</td><td>${Number.isFinite(row.shares) ? Number(row.shares).toFixed(2) : "—"}</td><td>${escapeHtml(row.status)}</td></tr>`).join("") : `<tr><td class="empty" colspan="7">No trades stored yet.</td></tr>`;
+}
+function renderClaims(portfolio) {
+  const rows = portfolio.claimable_positions || [];
+  const inFlight = portfolio.claim_in_flight_condition_id;
+  $("claim-status").textContent = portfolio.last_error || portfolio.claim_status || "No claim submitted";
+  $("claim-note").textContent = portfolio.direct_claim_supported
+    ? "EOA claims are submitted only after you press Claim and confirm. No background or automatic claim process exists."
+    : `This ${portfolio.wallet_type || "contract"} wallet requires Polymarket's authenticated relayer. Positions remain visible here; use the official Portfolio page to claim manually.`;
+  $("claims").innerHTML = rows.length ? rows.map((row, index) => {
+    const action = portfolio.direct_claim_supported
+      ? `<button class="claim-action" data-claim-index="${index}" ${inFlight ? "disabled" : ""}>${inFlight === row.condition_id ? "Claiming…" : "Claim"}</button>`
+      : `<a class="claim-action external" href="https://polymarket.com/portfolio" target="_blank" rel="noopener noreferrer">Open Portfolio</a>`;
+    return `<tr><td>${escapeHtml(row.title || row.slug)}</td><td>${escapeHtml(row.outcomes)}</td><td>${Number.isFinite(row.shares) ? Number(row.shares).toFixed(2) : "—"}</td><td>${money(row.redeemable_value_usd)}</td><td>${money(row.cash_pnl_usd)}</td><td>${action}</td></tr>`;
+  }).join("") : `<tr><td class="empty" colspan="6">No claimable positions right now.</td></tr>`;
+  document.querySelectorAll("[data-claim-index]").forEach(button => button.onclick = () => submitClaim(rows[Number(button.dataset.claimIndex)]));
+}
+function renderClaimHistory(rows) {
+  $("claim-history").innerHTML = rows.length ? rows.slice(0, 40).map(row => {
+    const hash = String(row.transaction_hash || "");
+    const link = /^0x[0-9a-fA-F]{64}$/.test(hash)
+      ? `<a href="https://polygonscan.com/tx/${encodeURIComponent(hash)}" target="_blank" rel="noopener noreferrer">${escapeHtml(hash)}</a>`
+      : escapeHtml(hash);
+    return `<tr><td>${timeLabel(row.claimed_at_ms)}</td><td>${escapeHtml(row.title)}</td><td><span class="hash">${link}</span></td></tr>`;
+  }).join("") : `<tr><td class="empty" colspan="3">No claims submitted by PolyTread.</td></tr>`;
+}
+function renderSessions(rows) {
+  $("sessions").innerHTML = rows.length ? rows.map(row => `<tr><td>${timeLabel(row.session.start_ms)}</td><td>${escapeHtml(row.session.title)}</td><td>${money(row.session.price_to_beat)}</td><td>${Math.round((row.session.end_ms - row.session.start_ms) / 60000)} min</td></tr>`).join("") : `<tr><td class="empty" colspan="4">No past sessions stored yet.</td></tr>`;
+}
+
+function drawChart(rows) {
+  const canvas = $("price-chart");
+  const context = canvas.getContext("2d");
+  const width = canvas.width, height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  context.strokeStyle = "#1e3042";
+  for (let line = 1; line < 5; line++) { context.beginPath(); context.moveTo(0, line * height / 5); context.lineTo(width, line * height / 5); context.stroke(); }
+  if (rows.length < 2) return;
+  drawSeries(context, rows, "chainlink_btc_usd", "#62a8ff", width, height, 8, .48);
+  drawSeries(context, rows, "binance_btc_usd", "#f4bb55", width, height, 8, .48);
+  drawSeries(context, rows, "up_price", "#39d98a", width, height, height * .52, .46);
+  drawSeries(context, rows, "down_price", "#ff647c", width, height, height * .52, .46);
+}
+function drawSeries(context, rows, key, color, width, height, top, fraction) {
+  const values = rows.map(row => row[key]).filter(Number.isFinite);
+  if (values.length < 2) return;
+  let min = Math.min(...values), max = Math.max(...values);
+  if (max === min) { max += 1; min -= 1; }
+  const plotHeight = height * fraction;
+  context.beginPath(); context.strokeStyle = color; context.lineWidth = 2;
+  let started = false;
+  rows.forEach((row, index) => {
+    if (!Number.isFinite(row[key])) return;
+    const x = index * width / Math.max(1, rows.length - 1);
+    const y = top + plotHeight - (row[key] - min) * plotHeight / (max - min);
+    if (!started) { context.moveTo(x, y); started = true; } else context.lineTo(x, y);
+  });
+  context.stroke();
+}
+
+function connectEvents() {
+  events = new EventSource("/events");
+  events.onopen = () => { connected = true; $("connection-dot").classList.add("live"); $("connection-label").textContent = "Live"; };
+  events.onmessage = event => { try { render(JSON.parse(event.data)); } catch (_) {} };
+  events.onerror = () => { connected = false; $("connection-dot").classList.remove("live"); $("connection-label").textContent = "Reconnecting"; document.querySelectorAll("[data-side]").forEach(button => button.disabled = true); };
+}
+
+async function authenticateDashboard() {
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  const accessToken = fragment.get("access");
+  history.replaceState(null, document.title, `${location.pathname}${location.search}`);
+  const options = accessToken
+    ? {method: "POST", headers: {"Authorization": `Bearer ${accessToken}`}}
+    : {method: "GET"};
+  const response = await fetch("/_auth/session", options);
+  if (!response.ok) {
+    throw new Error("Dashboard access expired. Open the current localhost link printed by PolyTread.");
+  }
+  dashboardAuthenticated = true;
+  connectCommands();
+  connectEvents();
+}
+
+renderNominals();
+authenticateDashboard().catch(error => {
+  connected = false;
+  dashboardAuthenticated = false;
+  $("connection-label").textContent = "Access required";
+  $("trade-notice").textContent = error.message;
+  $("claim-status").textContent = error.message;
+});
+</script>
+</body>
+</html>
