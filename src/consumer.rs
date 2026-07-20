@@ -22,6 +22,8 @@ use crate::app;
 use crate::config::{
     DEFAULT_POLYGON_RPC_URL, GAMMA_API_URL, RELAYER_API_URL, ServeArgs, TradingArgs,
 };
+use crate::connectivity;
+use crate::dns_remediation;
 use crate::trading::{TradingRuntimeConfig, validate_trading_config};
 
 const CONFIG_VERSION: u8 = 1;
@@ -44,6 +46,7 @@ pub struct ConsumerConfig {
 struct ConsumerPaths {
     config_file: PathBuf,
     data_dir: PathBuf,
+    dns_backup_file: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +97,8 @@ pub async fn setup(force: bool) -> Result<ConsumerConfig> {
     );
     println!();
 
+    let client = setup_connectivity_preflight().await?;
+
     let mut private_key = rpassword::prompt_password("Trading private key (hidden): ")
         .context("failed to read the hidden private key")?;
     let normalized = private_key.trim().to_owned();
@@ -109,10 +114,6 @@ pub async fn setup(force: bool) -> Result<ConsumerConfig> {
     let signer_address = signer.address();
     println!("Derived signer: {signer_address}");
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(12))
-        .build()
-        .context("failed to create the setup HTTP client")?;
     let spinner = progress_spinner("Discovering the Polymarket funding wallet...");
     let discovered_funder = match fetch_profile_funder(&client, signer_address).await {
         Ok(value) => value,
@@ -267,6 +268,39 @@ pub async fn status() -> Result<()> {
     }
 }
 
+pub async fn restore_dns() -> Result<()> {
+    let path = consumer_paths()?.dns_backup_file;
+    let outcome = dns_remediation::restore(&path).await?;
+    if let Some(step) = outcome.user_step {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            bail!("restoring macOS encrypted DNS requires an interactive terminal");
+        }
+        println!("{step}");
+        let _ = prompt_line("Press Enter after the operating-system step is complete: ")?;
+        dns_remediation::mark_restored_after_user_step(&path)?;
+    }
+    println!("The saved DNS configuration has been restored.");
+    Ok(())
+}
+
+pub async fn diagnose() -> Result<()> {
+    let client = setup_http_client()?;
+    let status = connectivity::probe(&client).await;
+    println!("{}", status.headline);
+    println!("{}", status.detail);
+    println!(
+        "CLOB REST: {} | Market REST: {} | Market WebSocket: {}",
+        connectivity_label(status.clob_rest_ok),
+        connectivity_label(status.market_rest_ok),
+        connectivity_label(status.market_websocket_ok)
+    );
+    if status.is_usable_for_setup() {
+        Ok(())
+    } else {
+        bail!("the required Polymarket connectivity path is not ready")
+    }
+}
+
 fn serve_args(config: &ConsumerConfig) -> Result<ServeArgs> {
     validate_config(config)?;
     let private_key = read_vault_secret(PRIVATE_KEY_VAULT_NAME)?;
@@ -367,7 +401,104 @@ fn consumer_paths() -> Result<ConsumerPaths> {
     Ok(ConsumerPaths {
         config_file: dirs.config_dir().join("config.json"),
         data_dir: dirs.data_local_dir().join("history"),
+        dns_backup_file: dirs.config_dir().join("dns-rollback.json"),
     })
+}
+
+async fn setup_connectivity_preflight() -> Result<Client> {
+    let mut client = setup_http_client()?;
+    let spinner = progress_spinner("Checking real Polymarket REST and WebSocket connectivity...");
+    let mut status = connectivity::probe(&client).await;
+    spinner.finish_with_message(status.headline.clone());
+    println!("{}", status.detail);
+
+    if status.is_usable_for_setup() {
+        if status.kind == connectivity::ConnectivityKind::Degraded {
+            println!(
+                "Setup can continue because the required REST endpoints work; the dashboard will keep checking the WebSocket path."
+            );
+        }
+        return Ok(client);
+    }
+
+    if !status.needs_dns_remediation() {
+        bail!(
+            "setup stopped before requesting or saving credentials because the real Polymarket endpoints are not ready"
+        );
+    }
+
+    println!();
+    println!(
+        "PolyTread can try {}.",
+        dns_remediation::remediation_label()
+    );
+    println!(
+        "This changes DNS resolution only; it does not change your public IP or determine whether trading is permitted in your location."
+    );
+    println!("A rollback record is kept locally for `polytread restore-dns`.");
+    let confirmation =
+        prompt_line("Type YES to request this DNS change, or press Enter to stop: ")?;
+    if confirmation.trim() != "YES" {
+        bail!("setup stopped before requesting or saving credentials; DNS was not changed");
+    }
+
+    let backup_path = consumer_paths()?.dns_backup_file;
+    let spinner = progress_spinner("Requesting the operating-system DNS change...");
+    let outcome = match dns_remediation::apply(&backup_path).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            spinner.finish_with_message("The DNS change was not applied.");
+            return Err(error).context("setup stopped before requesting or saving credentials");
+        }
+    };
+    spinner.finish_with_message("DNS change approved.");
+    if let Some(step) = outcome.user_step {
+        println!("{step}");
+        let _ = prompt_line("Press Enter after the operating-system step is complete: ")?;
+    }
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    client = setup_http_client()?;
+    let spinner = progress_spinner("Rechecking real Polymarket REST and WebSocket connectivity...");
+    status = connectivity::probe(&client).await;
+    spinner.finish_with_message(status.headline.clone());
+    println!("{}", status.detail);
+    if status.is_usable_for_setup() {
+        println!("DNS remediation succeeded. Restore it later with `polytread restore-dns`.");
+        return Ok(client);
+    }
+
+    eprintln!("The confirmed DNS change did not restore the required endpoints; restoring it now.");
+    match dns_remediation::restore(&backup_path).await {
+        Ok(outcome) => {
+            if let Some(step) = outcome.user_step {
+                println!("{step}");
+                let _ = prompt_line("Press Enter after the operating-system step is complete: ")?;
+                dns_remediation::mark_restored_after_user_step(&backup_path)?;
+            }
+        }
+        Err(error) => eprintln!(
+            "Automatic DNS rollback failed: {error}. Run `polytread restore-dns` before trying setup again."
+        ),
+    }
+    bail!(
+        "setup stopped before requesting or saving credentials because Polymarket connectivity is still unavailable"
+    )
+}
+
+fn setup_http_client() -> Result<Client> {
+    Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .context("failed to create the setup HTTP client")
+}
+
+fn connectivity_label(connected: bool) -> &'static str {
+    if connected {
+        "connected"
+    } else {
+        "unavailable"
+    }
 }
 
 fn vault_entry(name: &str) -> Result<Entry> {

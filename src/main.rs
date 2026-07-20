@@ -1,7 +1,9 @@
 mod app;
 mod config;
+mod connectivity;
 mod consumer;
 mod discovery;
+mod dns_remediation;
 mod feeds;
 mod history;
 mod portfolio;
@@ -32,6 +34,8 @@ async fn main() -> Result<()> {
         Some(Command::Setup(args)) => consumer::setup(args.force).await.map(|_| ()),
         Some(Command::Shutdown) => consumer::shutdown().await,
         Some(Command::Status) => consumer::status().await,
+        Some(Command::Diagnose) => consumer::diagnose().await,
+        Some(Command::RestoreDns) => consumer::restore_dns().await,
         Some(Command::Serve(mut args)) => {
             trading::inject_private_key_from_env(&mut args.trading)?;
             app::run(args).await

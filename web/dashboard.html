@@ -35,6 +35,12 @@
     .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 12px currentColor; }
     .dot.live { background: var(--green); }
+    .network-banner { display: grid; gap: 4px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: #101c29; }
+    .network-banner[hidden] { display: none; }
+    .network-banner strong { font-size: 13px; }
+    .network-banner span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .network-banner.warning { border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
+    .network-banner.error { border-color: color-mix(in srgb, var(--red) 60%, var(--line)); background: #21141a; }
     .grid { display: grid; gap: 14px; }
     .prices { grid-template-columns: repeat(6, minmax(0, 1fr)); }
     .two { grid-template-columns: minmax(0, 1.55fr) minmax(300px, .85fr); margin-top: 14px; }
@@ -96,6 +102,11 @@
     <div class="brand">Poly<span>Tread</span></div>
     <div class="status"><span id="connection-dot" class="dot"></span><span id="connection-label">Connecting</span></div>
   </header>
+
+  <section id="network-banner" class="network-banner" role="status" hidden>
+    <strong id="network-headline"></strong>
+    <span id="network-detail"></span>
+  </section>
 
   <section class="grid prices">
     <div class="panel"><div class="kicker">Bitcoin · Chainlink</div><div class="value" id="chainlink-price">—</div></div>
@@ -269,6 +280,16 @@ document.querySelectorAll("[data-side]").forEach(button => button.onclick = () =
 function render(data) {
   snapshot = data;
   const session = data.current_session;
+  const connectivity = data.connectivity || {};
+  const networkKind = connectivity.kind || "checking";
+  const networkBanner = $("network-banner");
+  const networkProblem = networkKind !== "available";
+  networkBanner.hidden = !networkProblem;
+  networkBanner.className = networkProblem
+    ? `network-banner ${networkKind === "degraded" || networkKind === "checking" ? "warning" : "error"}`
+    : "network-banner";
+  $("network-headline").textContent = connectivity.headline || "Checking Polymarket connectivity";
+  $("network-detail").textContent = connectivity.detail || "Testing real REST and WebSocket endpoints.";
   $("chainlink-price").textContent = money(data.chainlink_btc_usd);
   $("binance-price").textContent = money(data.binance_btc_usd);
   $("up-price").textContent = tokenPrice(data.up && (data.up.last_trade ?? midpoint(data.up)));
@@ -289,7 +310,8 @@ function render(data) {
   $("trade-notice").textContent = !data.web_trading_allowed ? "Browser trading is disabled. Restart with --allow-web-trading to opt in." : (trading.order_status || "Ready");
   $("balance").textContent = `Balance ${money(trading.available_usdc)}`;
   $("allowance").textContent = `Allowance ${money(trading.allowance_usdc)}`;
-  const orderReady = connected && data.web_trading_allowed && trading.enabled && trading.configured && session && !trading.in_flight_intent;
+  const networkReady = connectivity.setup_ready !== false;
+  const orderReady = connected && networkReady && data.web_trading_allowed && trading.enabled && trading.configured && session && !trading.in_flight_intent;
   document.querySelectorAll("[data-side]").forEach(button => button.disabled = !orderReady);
 
   $("feeds").innerHTML = (data.feeds || []).map(feed => `<span class="feed ${feed.connected ? "live" : ""}">${escapeHtml(feed.feed)} · ${feed.connected ? "connected" : "offline"}</span>`).join("");

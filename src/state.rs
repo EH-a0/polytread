@@ -3,6 +3,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use crate::connectivity::ConnectivityStatus;
 use crate::history::{PriceSample, SessionRecord};
 use crate::portfolio::PortfolioState;
 use crate::trading::{TradingEvent, TradingState};
@@ -91,6 +92,7 @@ pub enum AppEvent {
     Market(MarketTick),
     MarketBatch(Vec<MarketTick>),
     FeedStatus(FeedStatusUpdate),
+    Connectivity(ConnectivityStatus),
     Trading(TradingEvent),
     Portfolio(PortfolioState),
 }
@@ -126,6 +128,7 @@ pub struct DashboardSnapshot {
     pub down: OutcomeQuote,
     pub price_history: Vec<PriceSample>,
     pub feeds: Vec<FeedStatusUpdate>,
+    pub connectivity: ConnectivityStatus,
     pub trading: TradingState,
     pub portfolio: PortfolioState,
 }
@@ -149,6 +152,7 @@ pub struct AppState {
     price_history: VecDeque<PriceSample>,
     last_price_bucket_ms: Option<i64>,
     feed_status: BTreeMap<FeedKind, FeedStatusUpdate>,
+    connectivity: ConnectivityStatus,
     trading: TradingState,
     portfolio: PortfolioState,
 }
@@ -187,6 +191,7 @@ impl AppState {
                 .collect(),
             last_price_bucket_ms,
             feed_status: BTreeMap::new(),
+            connectivity: ConnectivityStatus::default(),
             trading,
             portfolio,
         }
@@ -206,6 +211,7 @@ impl AppState {
             AppEvent::FeedStatus(status) => {
                 self.feed_status.insert(status.feed, status);
             }
+            AppEvent::Connectivity(status) => self.connectivity = status,
             AppEvent::Trading(event) => self.apply_trading_event(event),
             AppEvent::Portfolio(portfolio) => self.portfolio = portfolio,
         }
@@ -439,6 +445,7 @@ impl AppState {
             down: self.down.clone(),
             price_history: self.price_history.iter().cloned().collect(),
             feeds: self.feed_status.values().cloned().collect(),
+            connectivity: self.connectivity.clone(),
             trading: self.trading.clone(),
             portfolio: self.portfolio.clone(),
         }
@@ -547,6 +554,7 @@ mod tests {
         let expected = [
             "binance_btc_usd",
             "chainlink_btc_usd",
+            "connectivity",
             "current_session",
             "down",
             "feeds",
