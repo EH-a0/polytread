@@ -1416,25 +1416,6 @@ pub async fn authenticate_client(
         .build();
     let base_client = ClobClient::new(CLOB_API_URL, sdk_config)?;
 
-    match base_client.check_geoblock().await {
-        Ok(status) if status.blocked => {
-            return Err(anyhow!(
-                "Polymarket reports this execution location as blocked (country={}, region={})",
-                status.country,
-                status.region
-            ));
-        }
-        Ok(status) => info!(
-            country = %status.country,
-            region = %status.region,
-            "Polymarket geoblock advisory check passed"
-        ),
-        Err(error) => warn!(
-            error = %error,
-            "Polymarket geoblock advisory check failed; continuing without a hard block"
-        ),
-    }
-
     let mut auth = base_client
         .authentication_builder(&signer)
         .signature_type(signature_type);

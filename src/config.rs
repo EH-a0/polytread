@@ -43,6 +43,10 @@ pub enum Command {
     Shutdown,
     /// Check whether the local PolyTread service is running.
     Status,
+    /// Probe real Polymarket REST, WebSocket, and DNS connectivity without credentials.
+    Diagnose,
+    /// Restore the DNS settings saved before PolyTread's confirmed remediation.
+    RestoreDns,
     /// Run the local browser dashboard and trading backend.
     Serve(ServeArgs),
     /// Submit one explicitly configured live order for operator validation.

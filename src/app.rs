@@ -8,6 +8,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::config::ServeArgs;
+use crate::connectivity;
 use crate::discovery;
 use crate::feeds::{binance_spot, market, rtds_chainlink};
 use crate::history::HistoryStore;
@@ -98,6 +99,11 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
             event_tx.clone(),
             shutdown_tx.subscribe(),
             args.discovery_poll_seconds,
+        )),
+        tokio::spawn(connectivity::run_monitor(
+            client.clone(),
+            event_tx.clone(),
+            shutdown_tx.subscribe(),
         )),
     ];
 
