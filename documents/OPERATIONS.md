@@ -13,8 +13,8 @@ targets, and attach each binary plus its SHA-256 file. The version in `npm/packa
 the Git tag before the NPM package is published. The installer fails if an asset is absent or its
 checksum differs.
 
-The package metadata and installer currently target `EH-a0/polytread`. If the final public
-repository uses another owner or name, change both locations before the first release.
+The package metadata and installer target `EH-a0/polytread`. If the repository ever moves, update
+both locations together before publishing another release.
 
 ## Local service
 
