@@ -5,7 +5,7 @@
 Requirements are Node.js 18 or newer, a current browser, and a supported native platform:
 Windows x64, Linux x64/arm64, or macOS x64/arm64.
 
-Once the release assets and NPM package are published:
+Install the published package and start PolyTread:
 
 ```sh
 npm install --global polytread && polytread
