@@ -7,6 +7,8 @@ mod dns_remediation;
 mod feeds;
 mod history;
 mod portfolio;
+mod runtime_ui;
+mod setup_ui;
 mod state;
 mod trading;
 mod ws_dashboard;
@@ -27,6 +29,7 @@ async fn main() -> Result<()> {
         .with_env_filter(cli.log_filter)
         .with_target(false)
         .compact()
+        .with_writer(setup_ui::TuiSafeStderr)
         .init();
 
     match cli.command {

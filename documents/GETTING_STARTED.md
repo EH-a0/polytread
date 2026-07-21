@@ -16,23 +16,26 @@ SHA-256 checksum. NPM and the JavaScript launcher never receive trading credenti
 
 ## First launch
 
-The terminal wizard performs these steps:
+The full-screen terminal wizard performs these steps:
 
-1. Reads the private key with hidden terminal input.
-2. Derives the Polygon signer address.
-3. Discovers the Polymarket funding wallet from the public profile API.
-4. Detects EOA, legacy proxy, Gnosis Safe, or deposit-wallet mode. If public metadata is
+1. Opens a single **Setup configs** selection; press <kbd>Enter</kbd> to continue.
+2. Reads the private key on a masked-input screen.
+3. Derives the Polygon signer address and checks the real Polymarket endpoints.
+4. Discovers the Polymarket funding wallet from the public profile API.
+5. Detects EOA, legacy proxy, Gnosis Safe, or deposit-wallet mode. If public metadata is
    inconclusive, it asks for the wallet type rather than guessing.
-5. Authenticates with the Polymarket CLOB and checks pUSD balance and both V2 allowances.
-6. Stores the private key and a random shutdown token in the OS credential vault.
-7. Stores only non-secret addresses, wallet type, localhost bind, and the trading opt-in in the
+6. Authenticates with the Polymarket CLOB and checks pUSD balance and both V2 allowances.
+7. Requests an explicit <kbd>Y</kbd> or <kbd>N</kbd> browser-trading choice.
+8. Stores the private key and a random shutdown token in the OS credential vault.
+9. Stores only non-secret addresses, wallet type, localhost bind, and the trading opt-in in the
    per-user config file.
 
-Each network step has a spinner and status message. A valid zero-balance wallet is accepted with a
-funding warning; backend balance gates still prevent an unfunded buy.
+The progress screen keeps every completed result visible and animates the active row. A valid
+zero-balance wallet is accepted with a funding warning; backend balance gates still prevent an
+unfunded buy.
 
-Browser orders remain view-only unless you type the exact word `ENABLE`. Even after that opt-in,
-the dashboard starts disarmed and asks for confirmation before every order.
+Browser orders remain view-only unless you press <kbd>Y</kbd> on the final safety choice. Even after
+that opt-in, the dashboard starts disarmed and asks for confirmation before every order.
 
 ## Normal commands
 

@@ -20,9 +20,10 @@ polytread
 The installer downloads the matching GitHub release binary and verifies its SHA-256 checksum.
 It never requests or receives trading credentials.
 
-On first launch, PolyTread opens an interactive terminal setup wizard with hidden private-key
-input. The private key is stored in the operating-system credential vault, not in npm, JavaScript,
-the dashboard, a command-line argument, or a plaintext config file.
+On first launch, PolyTread opens a full-screen terminal setup wizard with a single setup selection,
+masked private-key input, and an animated validation checklist. The private key is stored in the
+operating-system credential vault, not in npm, JavaScript, the dashboard, a command-line argument,
+or a plaintext config file.
 
 When setup completes, the service prints a rotating localhost dashboard link containing
 `#access=...`. Open that exact complete link after each restart. Browser trading remains opt-in,

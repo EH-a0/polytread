@@ -55,12 +55,13 @@ polytread
 
 The first launch opens an interactive terminal wizard. It:
 
-1. checks the real Polymarket REST and WebSocket endpoints before requesting credentials;
-2. reads the private key using hidden terminal input;
-3. derives the signer, discovers the funding wallet, and detects the wallet type;
-4. authenticates with the Polymarket CLOB and checks the pUSD collateral balance and allowances;
-5. asks whether browser trading should remain view-only or be manually enabled;
-6. stores secrets in the operating-system credential vault and starts the local dashboard.
+1. opens a full-screen setup menu; select **Setup configs** and press <kbd>Enter</kbd>;
+2. reads the private key through a dedicated masked-input screen;
+3. shows an animated checklist while it derives the signer and checks real Polymarket connectivity;
+4. discovers the funding wallet, detects its type, and authenticates with the CLOB;
+5. reports the pUSD collateral balance and both trading allowances;
+6. asks for an explicit <kbd>Y</kbd> or <kbd>N</kbd> browser-trading choice;
+7. stores secrets in the operating-system credential vault and starts the local dashboard.
 
 The **signer** is the address derived from the private key. The **funding wallet** is the account or
 contract that holds the Polymarket funds; it may be the signer itself, a proxy, or a Safe. PolyTread
@@ -118,7 +119,7 @@ automatically claim positions.
 ## Trading and claim safeguards
 
 - Consumer mode is fixed to a loopback listener and does not expose the dashboard publicly.
-- Browser orders remain disabled unless you type the exact word `ENABLE` during setup.
+- Browser orders remain disabled unless you explicitly press <kbd>Y</kbd> on the final setup screen.
 - The dashboard starts disarmed and asks for confirmation before every order.
 - The backend rechecks the active session, request ID, wallet balance and allowance, position size,
   and bounded execution price.

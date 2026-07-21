@@ -13,17 +13,26 @@ use crate::discovery;
 use crate::feeds::{binance_spot, market, rtds_chainlink};
 use crate::history::HistoryStore;
 use crate::portfolio::{ClaimIntent, PortfolioState, run_portfolio_task};
+use crate::runtime_ui::{RuntimeAction, RuntimeLogLevel, RuntimeUi};
 use crate::state::{AppEvent, AppState, now_ms};
 use crate::trading::{
-    NOMINAL_VALUES, OrderSide, TradeIntent, TradeSide, TradingMechanism, run_trading_task,
-    runtime_config_from_args,
+    MIN_MAKER_SESSION_REMAINING_MS, NOMINAL_VALUES, OrderSide, TradeIntent, TradeSide,
+    TradingMechanism, run_trading_task, runtime_config_from_args,
 };
 use crate::ws_dashboard::{
     DashboardCmd, DashboardCommand, DashboardControl, DashboardServer, Mechanism as WebMechanism,
     TradeSide as WebTradeSide,
 };
 
-pub async fn run(mut args: ServeArgs) -> Result<()> {
+pub async fn run(args: ServeArgs) -> Result<()> {
+    run_inner(args, None).await
+}
+
+pub async fn run_with_ui(args: ServeArgs, ui: &mut RuntimeUi) -> Result<()> {
+    run_inner(args, Some(ui)).await
+}
+
+async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) -> Result<()> {
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -49,6 +58,7 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
     let (shutdown_tx, _) = broadcast::channel::<()>(8);
     let (snapshot_tx, _) = broadcast::channel::<serde_json::Value>(64);
     let dashboard_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let dashboard_run_id = Uuid::new_v4().simple();
     let dashboard_url_token = dashboard_token.clone();
     let control_enabled = args.control_token.is_some();
     let (dashboard, mut command_rx, mut control_rx) = DashboardServer::new(
@@ -71,10 +81,16 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
             }
         }
     };
-    println!("PolyTread dashboard: http://{local_addr}/#access={dashboard_url_token}");
-    println!("This local access link rotates whenever PolyTread restarts.");
-    if control_enabled {
-        println!("Stop safely from another terminal with: polytread shutdown");
+    let dashboard_url =
+        format!("http://{local_addr}/?run={dashboard_run_id}#access={dashboard_url_token}");
+    if let Some(ui) = runtime_ui.as_deref_mut() {
+        ui.dashboard_ready(dashboard_url)?;
+    } else {
+        println!("PolyTread dashboard: {dashboard_url}");
+        println!("This local access link rotates whenever PolyTread restarts.");
+        if control_enabled {
+            println!("Stop safely from another terminal with: polytread shutdown");
+        }
     }
 
     let mut tasks = vec![
@@ -106,6 +122,12 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
             shutdown_tx.subscribe(),
         )),
     ];
+    if let Some(ui) = runtime_ui.as_deref_mut() {
+        ui.push_log(
+            RuntimeLogLevel::Info,
+            "Market feeds, discovery, and connectivity monitors started",
+        );
+    }
 
     let mut trading_order_tx = None;
     let mut claim_tx = None;
@@ -140,12 +162,20 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
             args.polygon_rpc_url.clone(),
         )));
         claim_tx = Some(portfolio_claim_tx);
+        if let Some(ui) = runtime_ui.as_deref_mut() {
+            ui.push_log(
+                RuntimeLogLevel::Info,
+                "Trading and portfolio services started in disarmed mode",
+            );
+        }
     }
 
     let mut sample_tick = tokio::time::interval(Duration::from_secs(1));
     sample_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut snapshot_tick = tokio::time::interval(Duration::from_millis(500));
     snapshot_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut runtime_ui_tick = tokio::time::interval(crate::runtime_ui::FRAME_INTERVAL);
+    runtime_ui_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let deadline = args
         .duration_seconds
         .map(|seconds| tokio::time::Instant::now() + Duration::from_secs(seconds));
@@ -169,13 +199,24 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
         tokio::select! {
             signal = tokio::signal::ctrl_c() => {
                 signal.context("failed waiting for Ctrl-C")?;
+                if let Some(ui) = runtime_ui.as_deref_mut() {
+                    ui.push_log(RuntimeLogLevel::Info, "Ctrl+C received; stopping safely");
+                }
                 break;
             }
-            _ = &mut deadline_future => break,
+            _ = &mut deadline_future => {
+                if let Some(ui) = runtime_ui.as_deref_mut() {
+                    ui.push_log(RuntimeLogLevel::Info, "Configured runtime duration completed");
+                }
+                break;
+            },
             Some(control) = control_rx.recv() => {
                 match control {
                     DashboardControl::Shutdown => {
                         info!("authenticated local shutdown requested");
+                        if let Some(ui) = runtime_ui.as_deref_mut() {
+                            ui.push_log(RuntimeLogLevel::Info, "Authenticated shutdown requested");
+                        }
                         break;
                     }
                 }
@@ -188,6 +229,9 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
                 }
             }
             Some(event) = event_rx.recv() => {
+                if let Some(ui) = runtime_ui.as_deref_mut() {
+                    ui.observe_event(&event);
+                }
                 let effects = state.apply(event);
                 if let Some(assets) = effects.market_assets {
                     asset_tx.send_replace(assets);
@@ -230,6 +274,16 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
                     .context("failed serializing dashboard snapshot")?;
                 let _ = snapshot_tx.send(snapshot);
             }
+            _ = runtime_ui_tick.tick(), if runtime_ui.is_some() => {
+                if runtime_ui
+                    .as_deref_mut()
+                    .expect("runtime UI exists when its select branch is enabled")
+                    .tick_status()?
+                    == RuntimeAction::Shutdown
+                {
+                    break;
+                }
+            }
         }
     }
 
@@ -237,6 +291,9 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
     dashboard_task.abort();
     for task in tasks {
         let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+    }
+    if let Some(ui) = runtime_ui {
+        ui.push_log(RuntimeLogLevel::Success, "PolyTread stopped safely");
     }
     info!("PolyTread service stopped");
     Ok(())
@@ -261,6 +318,26 @@ async fn run_discovery(
             _ = shutdown.recv() => return,
             _ = tokio::time::sleep(Duration::from_secs(poll_seconds.max(5))) => {}
         }
+    }
+}
+
+fn map_web_buy_side(
+    session: &crate::state::SessionDescriptor,
+    side: WebTradeSide,
+) -> (TradeSide, String, String, &'static str) {
+    match side {
+        WebTradeSide::BuyUp => (
+            TradeSide::BuyUp,
+            session.up_token_id.clone(),
+            session.down_token_id.clone(),
+            "UP",
+        ),
+        WebTradeSide::BuyDown => (
+            TradeSide::BuyDown,
+            session.down_token_id.clone(),
+            session.up_token_id.clone(),
+            "DOWN",
+        ),
     }
 }
 
@@ -317,43 +394,41 @@ async fn handle_command(
                     session.slug
                 ));
             }
-            if now_ms() >= session.end_ms {
+            let command_now_ms = now_ms();
+            if command_now_ms >= session.end_ms {
                 return Err(anyhow!("session {} has ended", session.slug));
             }
             if !state.trading().enabled {
                 return Err(anyhow!("trading must be armed before submitting an order"));
             }
 
-            let (trade_side, token_id, complement_token_id, outcome_label) = match side {
-                WebTradeSide::BuyUp => (
-                    TradeSide::BuyUp,
-                    session.up_token_id.clone(),
-                    session.down_token_id.clone(),
-                    "UP",
-                ),
-                WebTradeSide::BuyDown => (
-                    TradeSide::BuyDown,
-                    session.down_token_id.clone(),
-                    session.up_token_id.clone(),
-                    "DOWN",
-                ),
-                WebTradeSide::SellUp => (
-                    TradeSide::SellUp,
-                    session.up_token_id.clone(),
-                    session.down_token_id.clone(),
-                    "UP",
-                ),
-                WebTradeSide::SellDown => (
-                    TradeSide::SellDown,
-                    session.down_token_id.clone(),
-                    session.up_token_id.clone(),
-                    "DOWN",
-                ),
-            };
+            let (trade_side, token_id, complement_token_id, outcome_label) =
+                map_web_buy_side(&session, side);
             let mechanism = match mechanism {
                 WebMechanism::Taker => TradingMechanism::FastTaker,
                 WebMechanism::Maker => TradingMechanism::FastMaker,
             };
+            if matches!(mechanism, TradingMechanism::FastMaker)
+                && session.end_ms - command_now_ms < MIN_MAKER_SESSION_REMAINING_MS
+            {
+                return Err(anyhow!(
+                    "Fast Maker is unavailable with less than {} seconds left; use Fast Taker or wait for the next session",
+                    MIN_MAKER_SESSION_REMAINING_MS / 1_000
+                ));
+            }
+            let minimum_nominal = state
+                .minimum_buy_nominal(trade_side, mechanism)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "live order constraints for {outcome_label} are unavailable; wait for a fresh order book"
+                    )
+                })?;
+            if nominal_usd + 1e-9 < minimum_nominal {
+                return Err(anyhow!(
+                    "{outcome_label} requires at least ${minimum_nominal:.2} for {} at the current book; choose a larger amount",
+                    mechanism.label()
+                ));
+            }
             state.trading_mut().set_nominal(nominal_usd);
             state.trading_mut().set_mechanism(mechanism);
             state.trading_mut().set_side(trade_side);
@@ -394,7 +469,7 @@ async fn handle_command(
                 local_id.clone(),
                 fingerprint,
                 session.slug,
-                now_ms(),
+                command_now_ms,
             );
             if let Err(error) = order_tx.try_send(intent) {
                 state.trading_mut().clear_in_flight_if(&local_id);
@@ -464,7 +539,48 @@ mod tests {
         assert!(
             NOMINAL_VALUES
                 .iter()
-                .all(|value| value.is_finite() && *value > 0.0)
+                .all(|value| value.is_finite() && *value >= crate::trading::MIN_BUY_ORDER_USD)
+        );
+        assert_eq!(
+            NOMINAL_VALUES.first().copied(),
+            Some(crate::trading::MIN_BUY_ORDER_USD)
+        );
+        assert!(NOMINAL_VALUES.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn browser_buy_sides_map_to_the_correct_token_and_complement() {
+        let session = crate::state::SessionDescriptor {
+            slug: "btc-updown-5m-1".to_string(),
+            title: "BTC Up or Down".to_string(),
+            start_ms: 1_000,
+            end_ms: 301_000,
+            price_to_beat: Some(70_000.0),
+            up_token_id: "up-token".to_string(),
+            down_token_id: "down-token".to_string(),
+            active: true,
+            closed: false,
+            minimum_order_size: Some(5.0),
+            tick_size: Some(0.01),
+        };
+
+        assert_eq!(
+            map_web_buy_side(&session, WebTradeSide::BuyUp),
+            (
+                TradeSide::BuyUp,
+                "up-token".to_string(),
+                "down-token".to_string(),
+                "UP"
+            )
+        );
+        assert_eq!(
+            map_web_buy_side(&session, WebTradeSide::BuyDown),
+            (
+                TradeSide::BuyDown,
+                "down-token".to_string(),
+                "up-token".to_string(),
+                "DOWN"
+            )
         );
     }
 }

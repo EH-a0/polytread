@@ -22,8 +22,6 @@ const DASHBOARD_SESSION_COOKIE: &str = "polytread_dashboard_session";
 pub enum TradeSide {
     BuyUp,
     BuyDown,
-    SellUp,
-    SellDown,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -704,6 +702,10 @@ mod tests {
             "id=\"trades\"",
             "id=\"claims\"",
             "data-side=\"buy_up\"",
+            "data-side=\"buy_down\"",
+            "pUSD Trading Approval",
+            "Active Positions",
+            "Today Realized · UTC",
             "/_auth/session",
         ] {
             assert!(

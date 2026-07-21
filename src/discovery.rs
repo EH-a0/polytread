@@ -31,6 +31,8 @@ struct SearchMarket {
     end_date: Option<String>,
     outcomes: Option<String>,
     clob_token_ids: Option<String>,
+    order_min_size: Option<f64>,
+    order_price_min_tick_size: Option<f64>,
 }
 
 pub async fn fetch_sessions_at(
@@ -182,6 +184,12 @@ fn event_into_session(event: SearchEvent) -> Result<SessionDescriptor> {
         down_token_id,
         active: event_active,
         closed: event_closed,
+        minimum_order_size: market
+            .order_min_size
+            .filter(|value| value.is_finite() && *value > 0.0),
+        tick_size: market
+            .order_price_min_tick_size
+            .filter(|value| value.is_finite() && *value > 0.0),
     })
 }
 
@@ -334,6 +342,8 @@ mod tests {
                 end_date: None,
                 outcomes: Some("[\"Up\",\"Down\"]".to_string()),
                 clob_token_ids: Some("[\"up-id\",\"down-id\"]".to_string()),
+                order_min_size: Some(5.0),
+                order_price_min_tick_size: Some(0.01),
             }],
         };
         let session = event_into_session(event).expect("session");
@@ -342,6 +352,8 @@ mod tests {
         assert_eq!(session.price_to_beat, None);
         assert_eq!(session.start_ms, 1_773_878_400_000);
         assert_eq!(session.end_ms, 1_773_878_700_000);
+        assert_eq!(session.minimum_order_size, Some(5.0));
+        assert_eq!(session.tick_size, Some(0.01));
     }
 
     #[test]
@@ -362,6 +374,8 @@ mod tests {
                 end_date: None,
                 outcomes: Some("[\"No\",\"Yes\"]".to_string()),
                 clob_token_ids: Some("[\"no-id\",\"yes-id\"]".to_string()),
+                order_min_size: Some(5.0),
+                order_price_min_tick_size: Some(0.01),
             }],
         };
         let session = event_into_session(event).expect("session");
