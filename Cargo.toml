@@ -1,6 +1,6 @@
 [package]
 name = "polytread"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.97"
 description = "Lightweight browser-backed Polymarket BTC five-minute trading service"

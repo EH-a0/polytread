@@ -1127,6 +1127,10 @@ fn dashboard_display_origin(url: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "runtime_ui_gallery.rs"]
+mod gallery;
+
+#[cfg(test)]
 mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

@@ -59,6 +59,7 @@
   .header {
     grid-column: 1 / -1;
     display: flex;
+    min-width: 0;
     align-items: center;
     justify-content: space-between;
     gap: 18px;
@@ -72,8 +73,8 @@
     align-items: center;
   }
   .header-left { gap: 14px; min-width: 0; }
-  .header-right { gap: 12px; flex-shrink: 0; }
-  .header-metrics, .header-actions { gap: 8px; }
+  .header-right { min-width: 0; gap: 12px; flex-shrink: 0; }
+  .header-metrics, .header-actions { min-width: 0; gap: 8px; }
   .header-brand { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
   .header-title { color: var(--orange); font-size: 18px; line-height: 1; font-weight: 800; }
   .header-eyebrow, .metric-label, .panel-kicker, .field-label {
@@ -221,13 +222,20 @@
   .toggle-switch.on { border-color: rgba(0,255,136,.45); background: var(--green-bg); }
   .toggle-switch.on::after { transform: translateX(17px); background: var(--green); }
   .notice { min-height: 42px; margin: 10px 0 12px; padding: 9px 10px; border: 1px solid rgba(68,136,255,.17); border-radius: 7px; background: var(--blue-bg); color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+  .notice.warning { border-color: rgba(255,153,0,.34); background: var(--orange-bg); color: #d4a55e; }
+  .notice.error { border-color: rgba(255,77,95,.42); background: var(--red-bg); color: #ff9eaa; }
+  .notice.error::before { content: "TRADING BLOCKED"; display: block; margin-bottom: 4px; color: var(--red); font-size: 9px; font-weight: 900; letter-spacing: .1em; }
   .best-quotes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
   .quote-box { padding: 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-raised); }
   .quote-label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; }
   .quote-value { margin-top: 5px; color: var(--text); font-size: 16px; font-weight: 750; }
   .quote-value.up { color: var(--green); }
   .quote-value.down { color: var(--red); }
-  .trade-price { margin: 3px 0 12px; color: var(--yellow); font-size: 25px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; }
+  .trade-price { margin: 3px 0 3px; color: var(--yellow); font-size: 25px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; }
+  .trade-price-target { min-height: 16px; margin: 0 0 12px; color: var(--text-dim); font-size: 10px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+  .trade-price-target.positive { color: var(--green); }
+  .trade-price-target.negative { color: var(--red); }
+  .trade-price-target.neutral { color: var(--yellow); }
   .field-label { margin: 10px 0 7px; }
   .button-row { display: grid; gap: 7px; }
   .amount-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
@@ -395,7 +403,7 @@
   }
   @media (max-width: 1160px) {
     body { overflow: auto; }
-    .app { width: 100%; height: auto; min-height: 100vh; grid-template-columns: 1fr; grid-template-rows: auto minmax(520px, 62vh) auto 36px; }
+    .app { width: 100%; height: auto; min-height: 100vh; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(520px, 62vh) auto 36px; }
     .header { grid-column: 1; flex-wrap: wrap; }
     .header-right { width: 100%; justify-content: space-between; }
     .header-metrics { flex: 1; }
@@ -412,7 +420,9 @@
     .header-button { flex: 1; }
     .status-badge { justify-content: center; }
     .metric-pill { min-width: 0; padding: 7px; }
+    .metric-stack { min-width: 0; }
     .metric-label { font-size: 8px; }
+    .metric-label, .metric-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .metric-value { font-size: 11px; }
     .chart-header { align-items: flex-start; flex-direction: column; padding: 10px 12px; }
     .chart-container { padding: 9px; }
@@ -516,6 +526,7 @@
         <div class="quote-box"><div class="quote-label">Best Ask · DOWN</div><div class="quote-value down" id="best-ask-down">—</div></div>
       </div>
       <div class="trade-price" id="trade-price">—</div>
+      <div class="trade-price-target" id="trade-price-target">CHAINLINK · Waiting for a live BTC price</div>
       <div class="field-label">Trade Size</div>
       <div class="button-row amount-row" id="nominals"></div>
       <div class="field-label">Execution</div>
@@ -665,6 +676,72 @@ function approval(value) {
   return `${money(value)} limit`;
 }
 function tokenPrice(value) { return Number.isFinite(value) ? `$${Number(value).toFixed(3)}` : "—"; }
+function signedMoney(value) {
+  if (!Number.isFinite(value)) return "—";
+  const normalized = Math.abs(value) < .005 ? 0 : value;
+  const sign = normalized > 0 ? "+" : normalized < 0 ? "−" : "";
+  return `${sign}$${Math.abs(normalized).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+}
+function signedPercent(value) {
+  if (!Number.isFinite(value)) return "—";
+  const normalized = Math.abs(value) < .0005 ? 0 : value;
+  const sign = normalized > 0 ? "+" : normalized < 0 ? "−" : "";
+  return `${sign}${Math.abs(normalized).toFixed(3)}%`;
+}
+function renderChainlinkTargetComparison(data, chainlinkLive) {
+  const priceElement = $("trade-price");
+  const targetElement = $("trade-price-target");
+  const chainlinkPrice = chainlinkLive && Number.isFinite(data.chainlink_btc_usd)
+    ? Number(data.chainlink_btc_usd)
+    : null;
+  const targetPrice = data.current_session && Number.isFinite(data.current_session.price_to_beat)
+    ? Number(data.current_session.price_to_beat)
+    : null;
+
+  priceElement.textContent = money(chainlinkPrice);
+  targetElement.className = "trade-price-target";
+  if (!Number.isFinite(chainlinkPrice)) {
+    targetElement.textContent = "CHAINLINK · Waiting for a live BTC price";
+    return;
+  }
+  if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+    targetElement.textContent = "CHAINLINK · Waiting for this market's target price";
+    return;
+  }
+
+  const rawDifference = chainlinkPrice - targetPrice;
+  const difference = Math.abs(rawDifference) < .005 ? 0 : rawDifference;
+  const percentage = difference / targetPrice * 100;
+  const direction = difference > 0 ? "positive" : difference < 0 ? "negative" : "neutral";
+  const relationship = difference > 0 ? "above" : difference < 0 ? "below" : "at";
+  targetElement.classList.add(direction);
+  targetElement.textContent = `CHAINLINK · ${signedMoney(difference)} (${signedPercent(percentage)}) ${relationship} target`;
+}
+function capacityBlockerMessage(required, trading) {
+  const available = trading.available_usdc;
+  const allowance = trading.allowance_usdc;
+  const balanceLow = Number.isFinite(available) && available + 1e-9 < required;
+  const approvalLow = Number.isFinite(allowance) && allowance + 1e-9 < required;
+  const balanceShortfall = balanceLow ? Math.max(0, required - available) : 0;
+  const approvalShortfall = approvalLow ? Math.max(0, required - allowance) : 0;
+
+  if (balanceLow && approvalLow) {
+    return `Insufficient pUSD balance and approval: ${money(available)} is available and ${money(allowance)} is approved, but ${money(required)} is required. Add at least ${money(balanceShortfall)} pUSD and increase approval by ${money(approvalShortfall)}.`;
+  }
+  if (balanceLow) {
+    return `Insufficient pUSD balance: ${money(available)} is available, but ${money(required)} is required. Add at least ${money(balanceShortfall)} pUSD to trade.`;
+  }
+  if (approvalLow) {
+    return `pUSD trading approval is too low: ${money(allowance)} is approved, but ${money(required)} is required. Increase approval by at least ${money(approvalShortfall)}.`;
+  }
+  return `Available pUSD or trading approval is below the required ${money(required)} order size.`;
+}
+function setTradeNotice(message, tone = "info") {
+  const element = $("trade-notice");
+  element.textContent = message;
+  element.classList.toggle("warning", tone === "warning");
+  element.classList.toggle("error", tone === "error");
+}
 function timeLabel(value) { return Number.isFinite(value) ? new Date(value).toLocaleString() : "—"; }
 function shortTime(value) { return Number.isFinite(value) ? new Date(value).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "—"; }
 function requestId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
@@ -695,12 +772,6 @@ function mechanismLabel(mechanism) {
 function statusLabel(status) {
   const value = String(status || "—").replaceAll("_", " ");
   return value === "—" ? value : value.charAt(0).toUpperCase() + value.slice(1);
-}
-function quoteForSide(side) {
-  if (!snapshot || !side) return null;
-  const quote = side.endsWith("_up") ? snapshot.up : snapshot.down;
-  if (!quote) return null;
-  return quote.best_ask ?? quote.last_trade ?? midpoint(quote);
 }
 function makerOrderAvailable() {
   if (!snapshot || !snapshot.current_session) return false;
@@ -891,8 +962,6 @@ function syncNominalControls() {
 function updateTradeSelection() {
   document.querySelectorAll("[data-side]").forEach(button => button.classList.toggle("active", button.dataset.side === selectedSide));
   const execute = $("execute-button");
-  const price = quoteForSide(selectedSide);
-  $("trade-price").textContent = Number.isFinite(price) ? tokenPrice(price) : "—";
   const trading = snapshot && snapshot.trading ? snapshot.trading : {};
   const connectivity = snapshot && snapshot.connectivity ? snapshot.connectivity : {};
   const capacity = currentBuyCapacity();
@@ -1027,9 +1096,19 @@ function render(data) {
   setPnl("daily-pnl", portfolioFresh ? portfolio.today_realized_pnl_usd : null);
   setPnl("pnl-current", portfolioFresh ? portfolio.current_open_pnl_usd : null);
   setPnl("pnl-realized", portfolioFresh ? portfolio.today_realized_pnl_usd : null);
-  $("header-balance").textContent = money(balanceDataFresh ? trading.available_usdc : null);
-  $("pnl-balance").textContent = money(balanceDataFresh ? trading.available_usdc : null);
-  $("pnl-allowance").textContent = approval(balanceDataFresh ? trading.allowance_usdc : null);
+  const availableBalance = balanceDataFresh && Number.isFinite(trading.available_usdc) ? trading.available_usdc : null;
+  const availableAllowance = balanceDataFresh && Number.isFinite(trading.allowance_usdc) ? trading.allowance_usdc : null;
+  const balanceBelowMinimum = Number.isFinite(availableBalance) && availableBalance + 1e-9 < nominals[0];
+  const allowanceBelowMinimum = Number.isFinite(availableAllowance) && availableAllowance + 1e-9 < nominals[0];
+  $("header-balance").textContent = money(availableBalance);
+  $("pnl-balance").textContent = money(availableBalance);
+  $("pnl-allowance").textContent = approval(availableAllowance);
+  $("header-balance").classList.toggle("negative", balanceBelowMinimum);
+  $("pnl-balance").classList.toggle("negative", balanceBelowMinimum);
+  $("pnl-allowance").classList.toggle("negative", allowanceBelowMinimum);
+  $("header-balance").title = balanceBelowMinimum
+    ? `${money(availableBalance)} available; the minimum order is ${money(nominals[0])}.`
+    : "Available pUSD for new orders.";
   $("pnl-current-value").textContent = portfolioFresh ? money(portfolio.current_value_usd) : "—";
   $("pnl-open-positions").textContent = portfolioFresh && Number.isFinite(portfolio.open_positions) ? String(portfolio.open_positions) : "—";
 
@@ -1051,6 +1130,7 @@ function render(data) {
   marketFeedIsLive = marketFeedLive;
   $("binance-price").textContent = binanceLive ? money(data.binance_btc_usd) : "—";
   $("chainlink-price").textContent = chainlinkLive ? money(data.chainlink_btc_usd) : "—";
+  renderChainlinkTargetComparison(data, chainlinkLive);
   $("up-price").textContent = marketFeedLive ? tokenPrice(data.up && (data.up.last_trade ?? midpoint(data.up))) : "—";
   $("down-price").textContent = marketFeedLive ? tokenPrice(data.down && (data.down.last_trade ?? midpoint(data.down))) : "—";
   $("best-ask-up").textContent = marketFeedLive ? tokenPrice(data.up && data.up.best_ask) : "—";
@@ -1072,19 +1152,37 @@ function render(data) {
   const upPreset = requiredPresetFor("up");
   const downPreset = requiredPresetFor("down");
   const lowestCurrentPreset = [upPreset, downPreset].filter(Number.isFinite).sort((left, right) => left - right)[0];
-  $("trade-notice").textContent = !data.web_trading_allowed
-    ? "Browser trading is view-only. Run setup again and explicitly enable browser orders to opt in."
-    : !balanceDataFresh
-      ? (trading.balance_error || (String(trading.order_status || "").startsWith("Error:") ? trading.order_status : "Waiting for a fresh balance and trading approval."))
-      : Number.isFinite(buyCapacity) && buyCapacity + 1e-9 < nominals[0]
-        ? `Available pUSD or trading approval is below the $${nominals[0].toFixed(2)} minimum order.`
-        : !bookFreshness.up && !bookFreshness.down
-          ? "Waiting for a fresh Polymarket order book before enabling orders."
-          : !Number.isFinite(lowestCurrentPreset)
-            ? "Waiting for the current market's minimum size and tick rules."
-          : Number.isFinite(lowestCurrentPreset) && Number.isFinite(buyCapacity) && buyCapacity + 1e-9 < lowestCurrentPreset
-            ? `The current book requires at least the $${lowestCurrentPreset.toFixed(2)} preset; available pUSD or approval is ${money(buyCapacity)}.`
-        : (trading.order_status || "Ready for a manually confirmed order.");
+  let tradeNoticeMessage;
+  let tradeNoticeTone = "info";
+  if (!data.web_trading_allowed) {
+    tradeNoticeMessage = "Browser trading is view-only. Run setup again and explicitly enable browser orders to opt in.";
+    tradeNoticeTone = "warning";
+  } else if (!balanceDataFresh) {
+    const balanceError = trading.balance_error || (String(trading.order_status || "").startsWith("Error:") ? trading.order_status : null);
+    tradeNoticeMessage = balanceError
+      ? `Trading balance check failed: ${balanceError}`
+      : "Waiting for a fresh pUSD balance and trading approval.";
+    tradeNoticeTone = balanceError ? "error" : "warning";
+  } else if (!Number.isFinite(buyCapacity)) {
+    tradeNoticeMessage = "Waiting for a confirmed pUSD balance and trading approval.";
+    tradeNoticeTone = "warning";
+  } else if (buyCapacity + 1e-9 < nominals[0]) {
+    tradeNoticeMessage = capacityBlockerMessage(nominals[0], trading);
+    tradeNoticeTone = "error";
+  } else if (!bookFreshness.up && !bookFreshness.down) {
+    tradeNoticeMessage = "Waiting for a fresh Polymarket order book before enabling orders.";
+    tradeNoticeTone = "warning";
+  } else if (!Number.isFinite(lowestCurrentPreset)) {
+    tradeNoticeMessage = "Waiting for the current market's minimum size and tick rules.";
+    tradeNoticeTone = "warning";
+  } else if (buyCapacity + 1e-9 < lowestCurrentPreset) {
+    tradeNoticeMessage = capacityBlockerMessage(lowestCurrentPreset, trading);
+    tradeNoticeTone = "error";
+  } else {
+    tradeNoticeMessage = trading.order_status || "Ready for a manually confirmed order.";
+    tradeNoticeTone = String(tradeNoticeMessage).startsWith("Error:") ? "error" : "info";
+  }
+  setTradeNotice(tradeNoticeMessage, tradeNoticeTone);
 
   renderTrades(trading.ledger || []);
   renderClaims(portfolio, portfolioFresh);

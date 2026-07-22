@@ -96,3 +96,41 @@ npm pack --dry-run ./npm
 For a local end-to-end launcher test, build Rust and install the package with
 `POLYTREAD_BINARY_PATH` set to that local binary. That override is for packaging tests; normal
 installs download and verify the matching GitHub release asset.
+
+## Documentation screenshot galleries
+
+The setup and returning-user runtime screenshots are rendered from the real Ratatui view with
+fixed, synthetic state. They do not read the credential vault or contact a trading endpoint.
+
+```powershell
+./scripts/render-setup-gallery.ps1 -Gallery Setup -OutputDir C:\temp\polytread-setup-gallery
+./scripts/render-setup-gallery.ps1 -Gallery Runtime -OutputDir C:\temp\polytread-runtime-gallery
+```
+
+Each run exports individual `states/*.png` files, category sheets, one all-states contact sheet,
+JSON render data, and a local HTML index. Copy only the reviewed PNG deliverables into
+`documents/assets`; the large JSON and generated HTML are inspection artifacts.
+
+The browser-dashboard guide uses a localhost-only synthetic fixture around the production
+`web/dashboard.html`:
+
+```powershell
+python scripts/dashboard-guide-fixture.py --port 8765
+```
+
+Open `http://127.0.0.1:8765/web/dashboard.html?state=live`. Supported `state` groups are:
+
+- access and transport: `access-required`, `waiting`, `local`, and `reconnecting`;
+- normal controls: `view-only`, `live`, and `armed`;
+- connectivity: `degraded`, `dns-filtering`, `endpoint-restricted`, and `unreachable`;
+- market data: `stale-book`, `empty-book`, `closing`, `missing-target`, `missing-chainlink`,
+  `chainlink-below-target`, and `chainlink-at-target`;
+- trading readiness: `no-funds`, `balance-stale`, `balance-error`, `balance-shortfall`,
+  `approval-shortfall`, `minimum-too-high`, `maker-cutoff`, `in-flight-order`, and `order-error`;
+- portfolio and claims: `portfolio-stale`, `negative-pnl`, `claiming`, `claim-error`,
+  `claim-success`, `proxy-claims`, and `empty-claims`; and
+- local history: `empty-history`.
+
+The fixture freezes browser time at its example snapshot, disables motion, rejects unknown states,
+returns no-op command acknowledgements, and contains no wallet, credential, live endpoint, or real
+order path. Stop it with <kbd>Ctrl</kbd>+<kbd>C</kbd> after the screenshots are captured.

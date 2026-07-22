@@ -1,6 +1,9 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$OutputDir
+    [string]$OutputDir,
+
+    [ValidateSet("Setup", "Runtime")]
+    [string]$Gallery = "Setup"
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,14 +13,36 @@ $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $resolvedOutput = [System.IO.Path]::GetFullPath($OutputDir)
 [System.IO.Directory]::CreateDirectory($resolvedOutput) | Out-Null
 
-$previousGalleryDir = $env:POLYTREAD_SETUP_GALLERY_DIR
+if ($Gallery -eq "Runtime") {
+    $galleryEnvironmentVariable = "POLYTREAD_RUNTIME_GALLERY_DIR"
+    $galleryTest = "runtime_ui::gallery::export_complete_runtime_state_gallery"
+    $galleryJsonFile = "runtime-gallery.json"
+    $galleryImagePrefix = "polytread-runtime"
+    $galleryTitle = "PolyTread returning-user runtime — complete display-state gallery"
+}
+else {
+    $galleryEnvironmentVariable = "POLYTREAD_SETUP_GALLERY_DIR"
+    $galleryTest = "setup_ui::gallery::export_complete_setup_state_gallery"
+    $galleryJsonFile = "setup-gallery.json"
+    $galleryImagePrefix = "polytread-setup"
+    $galleryTitle = "PolyTread first-time setup — complete display-state gallery"
+}
+
+$previousGalleryDir = [Environment]::GetEnvironmentVariable(
+    $galleryEnvironmentVariable,
+    [EnvironmentVariableTarget]::Process
+)
 try {
-    $env:POLYTREAD_SETUP_GALLERY_DIR = $resolvedOutput
+    [Environment]::SetEnvironmentVariable(
+        $galleryEnvironmentVariable,
+        $resolvedOutput,
+        [EnvironmentVariableTarget]::Process
+    )
     Push-Location $repoRoot
     try {
-        cargo test --locked setup_ui::gallery::export_complete_setup_state_gallery -- --ignored --exact
+        cargo test --locked $galleryTest -- --ignored --exact
         if ($LASTEXITCODE -ne 0) {
-            throw "The Ratatui setup-state exporter failed."
+            throw "The Ratatui $Gallery-state exporter failed."
         }
     }
     finally {
@@ -25,11 +50,15 @@ try {
     }
 }
 finally {
-    $env:POLYTREAD_SETUP_GALLERY_DIR = $previousGalleryDir
+    [Environment]::SetEnvironmentVariable(
+        $galleryEnvironmentVariable,
+        $previousGalleryDir,
+        [EnvironmentVariableTarget]::Process
+    )
 }
 
-$jsonPath = Join-Path $resolvedOutput "setup-gallery.json"
-$gallery = Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json
+$jsonPath = Join-Path $resolvedOutput $galleryJsonFile
+$galleryData = Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json
 
 Add-Type -AssemblyName System.Drawing
 
@@ -194,7 +223,7 @@ function New-TerminalBitmap {
 $statesDir = Join-Path $resolvedOutput "states"
 [System.IO.Directory]::CreateDirectory($statesDir) | Out-Null
 $stateFiles = @{}
-foreach ($shot in $gallery.shots) {
+foreach ($shot in $galleryData.shots) {
     $fileName = "{0:D2}-{1}.png" -f [int]$shot.number, [string]$shot.slug
     $path = Join-Path $statesDir $fileName
     $bitmap = New-TerminalBitmap $shot
@@ -301,32 +330,24 @@ function New-GallerySheet {
     }
 }
 
-$allShots = @($gallery.shots)
-$overviewPath = Join-Path $resolvedOutput "polytread-setup-all-states.png"
+$allShots = @($galleryData.shots)
+$overviewPath = Join-Path $resolvedOutput "$galleryImagePrefix-all-states.png"
 $overviewArguments = @{
     Shots = $allShots
     Path = $overviewPath
-    Title = "PolyTread first-time setup — complete display-state gallery"
-    Subtitle = "26 deterministic states rendered from the real Ratatui implementation • orange / true-black theme"
+    Title = $galleryTitle
+    Subtitle = "$($allShots.Count) deterministic states rendered from the real Ratatui implementation • orange / true-black theme"
 }
 New-GallerySheet @overviewArguments
 
-$categoryOrder = @(
-    "Entry and credential input",
-    "Connectivity and DNS",
-    "Wallet and authentication",
-    "Outcomes and constraints"
-)
-$categorySlugs = @(
-    "01-entry-and-credentials",
-    "02-connectivity-and-dns",
-    "03-wallet-and-authentication",
-    "04-outcomes-and-constraints"
-)
+$categoryOrder = @($galleryData.shots | ForEach-Object { [string]$_.category } | Select-Object -Unique)
 for ($categoryIndex = 0; $categoryIndex -lt $categoryOrder.Count; $categoryIndex++) {
     $category = $categoryOrder[$categoryIndex]
-    $categoryShots = @($gallery.shots | Where-Object { $_.category -eq $category })
-    $categoryPath = Join-Path $resolvedOutput ($categorySlugs[$categoryIndex] + ".png")
+    $categoryShots = @($galleryData.shots | Where-Object { $_.category -eq $category })
+    $categorySlug = ([string]$category).ToLowerInvariant() -replace '[^a-z0-9]+', '-'
+    $categorySlug = $categorySlug.Trim('-')
+    $categoryFile = "{0:D2}-{1}.png" -f ($categoryIndex + 1), $categorySlug
+    $categoryPath = Join-Path $resolvedOutput $categoryFile
     $categoryArguments = @{
         Shots = $categoryShots
         Path = $categoryPath
@@ -340,7 +361,7 @@ $html = [System.Text.StringBuilder]::new()
 [void]$html.AppendLine("<!doctype html>")
 [void]$html.AppendLine('<html lang="en"><head><meta charset="utf-8">')
 [void]$html.AppendLine('<meta name="viewport" content="width=device-width,initial-scale=1">')
-[void]$html.AppendLine('<title>PolyTread setup display-state gallery</title>')
+[void]$html.AppendLine("<title>$(Get-HtmlEncoded $galleryTitle)</title>")
 [void]$html.AppendLine(@'
 <style>
 :root{color-scheme:dark;--bg:#050505;--card:#111;--raised:#151515;--border:#242424;--text:#e8e8e8;--muted:#999;--orange:#ff9900}
@@ -353,12 +374,12 @@ article img{display:block;width:100%;height:auto;background:#000;border-top:1px 
 @media(max-width:980px){.grid{grid-template-columns:1fr}header{padding-top:30px}h1{font-size:28px}}
 </style></head><body>
 '@)
-[void]$html.AppendLine('<header><h1>PolyTread first-time setup — complete display-state gallery</h1>')
-[void]$html.AppendLine('<p>Every frame below comes from the production Ratatui renderer. Values are disposable examples; no real private key is present. Animation screens use one stable frame.</p>')
-[void]$html.AppendLine('<div class="legend">Use the bracketed state number when requesting a change—for example: “Change [10] so the YES acknowledgement feels safer.”</div></header><main>')
+[void]$html.AppendLine("<header><h1>$(Get-HtmlEncoded $galleryTitle)</h1>")
+[void]$html.AppendLine("<p>Every frame below comes from the production Ratatui renderer. Values and access material are disposable examples. Animation screens use one stable frame.</p>")
+[void]$html.AppendLine('<div class="legend">Use the bracketed state number when requesting a change—for example: “Change [03] so this warning is easier to understand.”</div></header><main>')
 foreach ($category in $categoryOrder) {
     [void]$html.AppendLine("<section><h2>$(Get-HtmlEncoded $category)</h2><div class=`"grid`">")
-    foreach ($shot in @($gallery.shots | Where-Object { $_.category -eq $category })) {
+    foreach ($shot in @($galleryData.shots | Where-Object { $_.category -eq $category })) {
         $number = [int]$shot.number
         $file = "states/" + $stateFiles[$number]
         $label = "[{0:D2}] {1}" -f $number, [string]$shot.title
@@ -388,4 +409,4 @@ $cardTitleFont.Dispose()
 $cardBodyFont.Dispose()
 $textFormat.Dispose()
 
-Write-Output "Setup gallery written to $resolvedOutput"
+Write-Output "$Gallery gallery written to $resolvedOutput"
