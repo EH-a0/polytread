@@ -35,6 +35,12 @@ polytread status
 polytread shutdown
 ```
 
+The returning-user runtime screen uses <kbd>C</kbd> to copy the complete private dashboard URL.
+<kbd>Esc</kbd>, <kbd>Q</kbd>, and <kbd>Ctrl</kbd>+<kbd>C</kbd> close that screen and hand the runtime
+to a verified no-console worker; they do not stop the consumer service. `polytread shutdown` uses
+the same-user local control channel and remains the explicit stop command. Advanced `serve` mode
+continues to treat <kbd>Ctrl</kbd>+<kbd>C</kbd> as foreground shutdown.
+
 The HTTP shutdown endpoint is absent from advanced `serve` mode. In consumer mode it accepts only
 a loopback peer with the random bearer token stored in the OS credential vault.
 
@@ -69,7 +75,7 @@ History contains market, order, PnL, and claim metadata but never the signing ke
 
 ## Upgrade procedure
 
-1. Stop with `polytread shutdown` or Ctrl+C.
+1. Stop consumer mode with `polytread shutdown`; stop advanced foreground `serve` mode with Ctrl+C.
 2. Back up the per-user data directory or advanced data directory.
 3. Run `scripts/verify.sh` or `scripts/verify.ps1` on the candidate source.
 4. Install the checksum-verified package/binary.

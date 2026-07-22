@@ -34,6 +34,7 @@ state, and recent local history. It never receives a private key.
 | `src/trading.rs` | Authenticated execution, reconciliation, and trade history |
 | `src/portfolio.rs` | Data-API PnL, claim discovery/history, and manual EOA claims |
 | `src/history.rs` | Session and one-second price persistence |
+| `src/local_control.rs` | Same-user local shutdown channel for the background consumer |
 | `src/ws_dashboard.rs` | Loopback HTTP, SSE, and WebSocket server |
 | `web/dashboard.html` | Embedded browser interface |
 

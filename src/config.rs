@@ -47,6 +47,9 @@ pub enum Command {
     Diagnose,
     /// Restore the DNS settings saved before PolyTread's confirmed remediation.
     RestoreDns,
+    /// Internal no-console worker used after the runtime view is closed.
+    #[command(name = "__background-worker", hide = true)]
+    BackgroundWorker,
     /// Run the local browser dashboard and trading backend.
     Serve(ServeArgs),
     /// Submit one explicitly configured live order for operator validation.

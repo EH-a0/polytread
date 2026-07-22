@@ -69,21 +69,29 @@ normally discovers both the funding wallet and wallet type automatically and ask
 guessing if detection is inconclusive.
 
 If DNS filtering blocks the required endpoints, setup may offer an operating-system DNS change.
-Nothing changes unless you type `YES`. PolyTread saves a local rollback record, and the original
-settings can be restored with `polytread restore-dns`. This changes DNS resolution only; it does
-not change your public IP or determine whether trading is permitted in your location.
+The approval screen explains the change in plain language; press <kbd>I</kbd> there to open the
+full diagnostic and rollback details. Nothing changes unless you type `YES`. PolyTread saves a
+local rollback record, and the original settings can be restored with `polytread restore-dns`.
+This changes DNS resolution only; it does not change your public IP or determine whether trading
+is permitted in your location.
 
 ### 3. Open the exact dashboard link
 
-After the listener starts, the terminal prints a link similar to:
+After the listener starts, the runtime screen shows a link similar to:
 
 ```text
 PolyTread dashboard: http://127.0.0.1:9878/#access=...
 ```
 
-Open the **complete link printed by the current process**. Its temporary URL fragment establishes
+Press <kbd>C</kbd> to copy the complete private URL without selecting its wrapped text, then open
+it in your browser. Its temporary URL fragment establishes
 an HttpOnly local browser session and is then removed from the address bar. The access link rotates
 whenever PolyTread restarts, so an old or partial link will not work and should not be shared.
+
+Press <kbd>Esc</kbd>, <kbd>Q</kbd>, or <kbd>Ctrl</kbd>+<kbd>C</kbd> on the returning-user runtime
+screen to close only that view. PolyTread verifies a no-console background worker, returns the
+terminal prompt, and prints the complete URL again. The service continues until you run
+`polytread shutdown`.
 
 Setup is successful when the dashboard opens, shows connection status, and begins discovering the
 current BTC five-minute session. The dashboard starts disarmed even if browser trading was enabled
@@ -102,7 +110,8 @@ polytread setup --force    # validate and replace the saved wallet setup
 polytread restore-dns      # restore DNS saved by an approved setup remediation
 ```
 
-You can also stop the foreground process with <kbd>Ctrl</kbd>+<kbd>C</kbd>.
+In advanced `polytread serve` mode, <kbd>Ctrl</kbd>+<kbd>C</kbd> still stops that foreground process.
+On the normal consumer runtime screen it closes the view and leaves the service running.
 
 ## What PolyTread provides
 

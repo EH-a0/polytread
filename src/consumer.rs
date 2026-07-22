@@ -1,7 +1,8 @@
 use std::fs::{self, OpenOptions};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -15,14 +16,15 @@ use polymarket_client_sdk_v2::{POLYGON, derive_proxy_wallet, derive_safe_wallet}
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
-use crate::app;
+use crate::app::{self, DashboardIdentity, RunOutcome};
 use crate::config::{
     DEFAULT_POLYGON_RPC_URL, GAMMA_API_URL, RELAYER_API_URL, ServeArgs, TradingArgs,
 };
 use crate::connectivity;
 use crate::dns_remediation;
+use crate::local_control;
 use crate::runtime_ui::{RuntimeUi, is_cancelled as runtime_ui_was_cancelled};
 use crate::setup_ui::{
     PrivateKeyAction, SetupProgress, SetupUi, is_cancelled as setup_was_cancelled,
@@ -34,6 +36,9 @@ const DEFAULT_BIND: &str = "127.0.0.1:9878";
 const VAULT_SERVICE: &str = "xyz.polytread.cli";
 const PRIVATE_KEY_VAULT_NAME: &str = "trading-private-key";
 const CONTROL_TOKEN_VAULT_NAME: &str = "local-control-token";
+const BACKGROUND_BOOTSTRAP_VERSION: u8 = 1;
+const MAX_BACKGROUND_BOOTSTRAP_BYTES: u64 = 4_096;
+const BACKGROUND_READY_ATTEMPTS: usize = 100;
 
 const STEP_DERIVE_SIGNER: usize = 0;
 const STEP_CONNECTIVITY: usize = 1;
@@ -48,6 +53,10 @@ const RETURN_STEP_CONNECTIVITY: usize = 2;
 const RETURN_STEP_CREDENTIALS: usize = 3;
 const RETURN_STEP_PERMISSIONS: usize = 4;
 const RETURN_STEP_DASHBOARD: usize = 5;
+
+const POST_SETUP_STEP_CONFIGURATION: usize = 0;
+const POST_SETUP_STEP_VAULT: usize = 1;
+const POST_SETUP_STEP_DASHBOARD: usize = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConsumerConfig {
@@ -66,6 +75,17 @@ struct ConsumerPaths {
     dns_backup_file: PathBuf,
 }
 
+struct CompletedSetup {
+    config: ConsumerConfig,
+    start_runtime: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BackgroundBootstrap {
+    version: u8,
+    dashboard_identity: DashboardIdentity,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PublicProfile {
@@ -78,15 +98,29 @@ struct DeployedResponse {
 }
 
 pub async fn start() -> Result<()> {
-    let config = match read_config()? {
+    match read_config()? {
         Some(config) if io::stdin().is_terminal() && io::stdout().is_terminal() => {
-            return start_returning_user(config).await;
+            start_returning_user(config).await
         }
-        Some(config) => config,
-        None => setup(false).await?,
-    };
-    let args = serve_args(&config)?;
-    app::run(args).await
+        Some(config) => app::run(serve_args(&config)?).await,
+        None => {
+            let completed = setup(false).await?;
+            if completed.start_runtime {
+                start_after_setup(completed.config).await
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+pub async fn setup_and_start(force: bool) -> Result<()> {
+    let completed = setup(force).await?;
+    if completed.start_runtime {
+        start_after_setup(completed.config).await
+    } else {
+        Ok(())
+    }
 }
 
 async fn start_returning_user(config: ConsumerConfig) -> Result<()> {
@@ -110,14 +144,210 @@ async fn start_returning_user(config: ConsumerConfig) -> Result<()> {
         }
     };
 
-    ui.animate_briefly(Duration::from_millis(160)).await?;
-    let result = app::run_with_ui(args, &mut ui).await;
-    if let Err(error) = &result {
-        ui.fail_active("PolyTread stopped before the runtime became healthy");
-        let error_text = format!("{error:#}");
-        let _ = ui.show_failure(&error_text);
+    run_runtime_with_ui(args, ui).await
+}
+
+async fn start_after_setup(config: ConsumerConfig) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return app::run(serve_args(&config)?).await;
     }
-    result
+
+    let mut ui = RuntimeUi::enter([
+        "Use completed setup",
+        "Open credential vault",
+        "Start local dashboard",
+    ])?;
+    ui.complete(
+        POST_SETUP_STEP_CONFIGURATION,
+        "Configuration, wallet checks, and permissions are ready",
+    );
+    ui.running(
+        POST_SETUP_STEP_VAULT,
+        "Loading the credentials saved during setup...",
+    );
+    let config_for_vault = config.clone();
+    let args_result = ui
+        .animate_while(Box::pin(async move {
+            tokio::task::spawn_blocking(move || serve_args(&config_for_vault))
+                .await
+                .context("post-setup credential-vault task failed")?
+        }))
+        .await
+        .and_then(|result| result);
+    let args = match args_result {
+        Ok(args) => args,
+        Err(error) => {
+            ui.fail_active("The saved credentials could not be reopened");
+            let error_text = format!("{error:#}");
+            let _ = ui.show_failure(&error_text);
+            return Err(error);
+        }
+    };
+    ui.complete(
+        POST_SETUP_STEP_VAULT,
+        "New credentials loaded from the operating-system vault",
+    );
+    ui.running(
+        POST_SETUP_STEP_DASHBOARD,
+        "Opening the configured loopback listener...",
+    );
+    run_runtime_with_ui(args, ui).await
+}
+
+async fn run_runtime_with_ui(args: ServeArgs, mut ui: RuntimeUi) -> Result<()> {
+    ui.animate_briefly(Duration::from_millis(160)).await?;
+    let bind = args.bind.clone();
+    match app::run_with_ui(args, &mut ui).await {
+        Ok(RunOutcome::Stopped) => Ok(()),
+        Ok(RunOutcome::Detach {
+            identity,
+            dashboard_url,
+        }) => {
+            drop(ui);
+            handoff_to_background(identity, &bind).await?;
+            println!("PolyTread is running in the background.");
+            println!("Dashboard: {dashboard_url}");
+            println!("Stop the service with: polytread shutdown");
+            Ok(())
+        }
+        Err(error) => {
+            ui.fail_active("PolyTread stopped before the runtime became healthy");
+            let error_text = format!("{error:#}");
+            let _ = ui.show_failure(&error_text);
+            Err(error)
+        }
+    }
+}
+
+pub async fn background_worker() -> Result<()> {
+    if io::stdin().is_terminal() {
+        bail!("the internal background worker can only be started by PolyTread");
+    }
+    let bootstrap = read_background_bootstrap()?;
+    if bootstrap.version != BACKGROUND_BOOTSTRAP_VERSION {
+        bail!(
+            "unsupported background bootstrap version {}",
+            bootstrap.version
+        );
+    }
+    bootstrap.dashboard_identity.validate()?;
+    let config = read_config()?.ok_or_else(|| anyhow!("PolyTread has not been set up yet"))?;
+    let args = serve_args(&config)?;
+    app::run_background(args, bootstrap.dashboard_identity).await
+}
+
+async fn handoff_to_background(identity: DashboardIdentity, bind: &str) -> Result<()> {
+    let mut child = spawn_background_worker(identity.clone())?;
+    let readiness = wait_for_background_worker(&mut child, bind, &identity).await;
+    if let Err(error) = readiness {
+        let child_id = child.id();
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error).with_context(|| {
+            format!("background worker {child_id} did not take over the local dashboard")
+        });
+    }
+    Ok(())
+}
+
+fn spawn_background_worker(identity: DashboardIdentity) -> Result<Child> {
+    let executable = std::env::current_exe()
+        .context("failed locating the current PolyTread executable for background handoff")?;
+    let bootstrap = BackgroundBootstrap {
+        version: BACKGROUND_BOOTSTRAP_VERSION,
+        dashboard_identity: identity,
+    };
+    let payload = Zeroizing::new(
+        serde_json::to_vec(&bootstrap).context("failed preparing the background handoff")?,
+    );
+    let mut command = ProcessCommand::new(executable);
+    command
+        .arg("__background-worker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+
+        command.process_group(0);
+    }
+
+    let mut child = command
+        .spawn()
+        .context("failed starting the PolyTread background worker")?;
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("background worker stdin was unavailable"))
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(payload.as_slice())
+                .context("failed sending the private background bootstrap")?;
+            stdin
+                .flush()
+                .context("failed flushing the private background bootstrap")
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    Ok(child)
+}
+
+fn read_background_bootstrap() -> Result<BackgroundBootstrap> {
+    let mut payload = Vec::new();
+    io::stdin()
+        .take(MAX_BACKGROUND_BOOTSTRAP_BYTES + 1)
+        .read_to_end(&mut payload)
+        .context("failed reading the private background bootstrap")?;
+    if payload.len() as u64 > MAX_BACKGROUND_BOOTSTRAP_BYTES {
+        payload.zeroize();
+        bail!("background bootstrap exceeded its size limit");
+    }
+    let payload = Zeroizing::new(payload);
+    serde_json::from_slice(payload.as_slice()).context("invalid background bootstrap")
+}
+
+async fn wait_for_background_worker(
+    child: &mut Child,
+    bind: &str,
+    identity: &DashboardIdentity,
+) -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .context("failed building the background readiness client")?;
+    let auth_url = format!("http://{bind}/_auth/session");
+    for _ in 0..BACKGROUND_READY_ATTEMPTS {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed checking the PolyTread background worker")?
+        {
+            bail!("background worker exited early ({status})");
+        }
+        if let Ok(response) = client
+            .post(&auth_url)
+            .bearer_auth(identity.access_token())
+            .send()
+            .await
+            && response.status().is_success()
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!("background dashboard did not become ready within 10 seconds")
 }
 
 async fn run_returning_checks(ui: &mut RuntimeUi, config: ConsumerConfig) -> Result<ServeArgs> {
@@ -249,7 +479,7 @@ fn saved_permission_detail(allow_web_trading: bool) -> &'static str {
     }
 }
 
-pub async fn setup(force: bool) -> Result<ConsumerConfig> {
+async fn setup(force: bool) -> Result<CompletedSetup> {
     if let Some(existing) = read_config()?
         && !force
     {
@@ -259,7 +489,10 @@ pub async fn setup(force: bool) -> Result<ConsumerConfig> {
             wallet_type_label(existing.signature_type)
         );
         println!("Run `polytread setup --force` to replace the local setup.");
-        return Ok(existing);
+        return Ok(CompletedSetup {
+            config: existing,
+            start_runtime: false,
+        });
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
@@ -308,8 +541,11 @@ pub async fn setup(force: bool) -> Result<ConsumerConfig> {
     .await
     {
         Ok((config, allow_web_trading)) => {
-            let _ = ui.show_complete(&progress, allow_web_trading);
-            Ok(config)
+            let start_runtime = ui.show_complete(&progress, allow_web_trading)?;
+            Ok(CompletedSetup {
+                config,
+                start_runtime,
+            })
         }
         Err(error) if setup_was_cancelled(&error) => Err(error),
         Err(error) => {
@@ -483,6 +719,10 @@ async fn run_setup_wizard(
 
 pub async fn shutdown() -> Result<()> {
     let config = read_config()?.ok_or_else(|| anyhow!("PolyTread has not been set up yet"))?;
+    if local_control::request_shutdown().await? {
+        report_shutdown_completion(&config.bind).await;
+        return Ok(());
+    }
     let token = read_vault_secret(CONTROL_TOKEN_VAULT_NAME)?;
     let response = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -498,8 +738,30 @@ pub async fn shutdown() -> Result<()> {
             response.status()
         );
     }
-    println!("Graceful shutdown requested.");
+    report_shutdown_completion(&config.bind).await;
     Ok(())
+}
+
+async fn report_shutdown_completion(bind: &str) {
+    let client = match Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            println!("Graceful shutdown requested.");
+            return;
+        }
+    };
+    let health_url = format!("http://{bind}/healthz");
+    for _ in 0..50 {
+        if client.get(&health_url).send().await.is_err() {
+            println!("PolyTread stopped safely.");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    println!("Graceful shutdown requested; PolyTread is finishing its cleanup.");
 }
 
 pub async fn status() -> Result<()> {
@@ -694,10 +956,7 @@ async fn setup_connectivity_preflight(
     }
 
     progress.awaiting_input(STEP_CONNECTIVITY, status.headline.clone());
-    let dns_detail = format!(
-        "{} This changes DNS resolution only, not your public IP or trading eligibility. PolyTread keeps a local rollback record for `polytread restore-dns`.",
-        status.detail
-    );
+    let dns_detail = status.detail.clone();
     if !ui.confirm_dns_change(progress, dns_remediation::remediation_label(), &dns_detail)? {
         bail!("setup stopped before saving credentials; DNS was not changed");
     }

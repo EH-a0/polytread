@@ -20,7 +20,10 @@ An operator may set `POLYTREAD_POLYGON_RPC_URL` to replace the public Polygon RP
 explicit EOA claim. Keep authenticated RPC URLs out of shell history and never commit them.
 
 Use `polytread setup --force` to validate and replace a configuration. It never prints the private
-key. `polytread status` and `polytread shutdown` use the listener stored in this config.
+key. `polytread status` uses the listener stored in this config. A running Windows consumer also
+offers a same-user, local-only control channel so `polytread shutdown` works from another session
+without copying a vault secret; older builds and other platforms retain the authenticated
+loopback fallback.
 
 ## Advanced service settings
 

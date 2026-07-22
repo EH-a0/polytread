@@ -463,21 +463,40 @@ impl SetupUi {
     ) -> Result<bool> {
         let mut value = String::with_capacity(3);
         let mut input_error = None;
+        let mut show_details = false;
         loop {
             let tick = self.tick;
-            let panel = ProgressPanel::DnsConfirmation {
-                remediation,
-                detail,
-                value: &value,
-                error: input_error,
+            let panel = if show_details {
+                ProgressPanel::DnsDetails {
+                    remediation,
+                    detail,
+                }
+            } else {
+                ProgressPanel::DnsConfirmation {
+                    value: &value,
+                    error: input_error,
+                }
             };
             self.draw(|frame| render_progress(frame, tick, progress, panel))?;
             match poll_event(FRAME_INTERVAL)? {
                 Some(Event::Key(key)) if is_actionable_key(key) => {
+                    if show_details {
+                        if is_ctrl_c(key) {
+                            return cancelled();
+                        }
+                        if is_dns_details_return_key(key) {
+                            show_details = false;
+                        }
+                        self.tick = self.tick.wrapping_add(1);
+                        continue;
+                    }
                     if is_cancel_key(key) {
                         return cancelled();
                     }
                     match key.code {
+                        _ if is_dns_details_key(key) => {
+                            show_details = true;
+                        }
                         KeyCode::Enter if value.is_empty() => return Ok(false),
                         KeyCode::Enter if value == "YES" => return Ok(true),
                         KeyCode::Enter => {
@@ -550,18 +569,20 @@ impl SetupUi {
         }
     }
 
-    pub fn show_complete(&mut self, progress: &SetupProgress, browser_trading: bool) -> Result<()> {
+    pub fn show_complete(
+        &mut self,
+        progress: &SetupProgress,
+        browser_trading: bool,
+    ) -> Result<bool> {
         loop {
             let tick = self.tick;
             let panel = ProgressPanel::Complete { browser_trading };
             self.draw(|frame| render_progress(frame, tick, progress, panel))?;
             match poll_event(FRAME_INTERVAL)? {
-                Some(Event::Key(key))
-                    if is_actionable_key(key)
-                        && (is_ctrl_c(key)
-                            || matches!(key.code, KeyCode::Enter | KeyCode::Esc)) =>
-                {
-                    return Ok(());
+                Some(Event::Key(key)) if is_actionable_key(key) => {
+                    if let Some(start_runtime) = setup_complete_action(key) {
+                        return Ok(start_runtime);
+                    }
                 }
                 _ => {}
             }
@@ -663,6 +684,26 @@ fn is_cancel_key(key: KeyEvent) -> bool {
     key.code == KeyCode::Esc || is_ctrl_c(key)
 }
 
+fn is_dns_details_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('i' | 'I'))
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+}
+
+fn is_dns_details_return_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Enter | KeyCode::Esc) || is_dns_details_key(key)
+}
+
+fn setup_complete_action(key: KeyEvent) -> Option<bool> {
+    match key.code {
+        KeyCode::Enter => Some(true),
+        KeyCode::Esc => Some(false),
+        _ if is_ctrl_c(key) => Some(false),
+        _ => None,
+    }
+}
+
 fn cancelled<T>() -> Result<T> {
     Err(SetupCancelled.into())
 }
@@ -678,10 +719,12 @@ enum ProgressPanel<'a> {
     },
     WalletType,
     DnsConfirmation {
-        remediation: &'a str,
-        detail: &'a str,
         value: &'a str,
         error: Option<&'a str>,
+    },
+    DnsDetails {
+        remediation: &'a str,
+        detail: &'a str,
     },
     LockedNotice {
         title: &'a str,
@@ -872,6 +915,9 @@ fn render_progress(
                 ProgressPanel::Locked => {
                     "Finishing an approved system change  •  Please do not close PolyTread"
                 }
+                ProgressPanel::Complete { .. } => {
+                    "Setup is saved  •  Enter starts runtime  •  Esc returns to the terminal"
+                }
                 _ => "Follow the instruction above  •  Esc to cancel safely",
             },
         );
@@ -885,12 +931,13 @@ fn render_progress(
             error,
         } => render_funding_panel(frame, tick, value, signer_address, error),
         ProgressPanel::WalletType => render_wallet_type_panel(frame),
-        ProgressPanel::DnsConfirmation {
+        ProgressPanel::DnsConfirmation { value, error } => {
+            render_dns_panel(frame, tick, value, error)
+        }
+        ProgressPanel::DnsDetails {
             remediation,
             detail,
-            value,
-            error,
-        } => render_dns_panel(frame, tick, remediation, detail, value, error),
+        } => render_dns_details_panel(frame, remediation, detail),
         ProgressPanel::LockedNotice { title, detail } => {
             render_notice_panel(frame, title, detail, WARNING, true)
         }
@@ -1148,54 +1195,164 @@ fn render_wallet_type_panel(frame: &mut Frame<'_>) {
     frame.render_widget(Paragraph::new(content).wrap(Wrap { trim: true }), inner);
 }
 
-fn render_dns_panel(
-    frame: &mut Frame<'_>,
-    tick: u64,
-    remediation: &str,
-    detail: &str,
-    value: &str,
-    error: Option<&str>,
-) {
-    let area = modal_rect(frame.area(), 84, 22);
-    let block = modal_block(" CONNECTIVITY REMEDIATION ", WARNING);
+fn render_dns_panel(frame: &mut Frame<'_>, tick: u64, value: &str, error: Option<&str>) {
+    let area = modal_rect(frame.area(), 78, 18);
+    let block = modal_block(" SECURE CONNECTION HELP ", WARNING);
     let inner = inset(block.inner(area), 2, 1);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
     let chunks = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(8),
+        Constraint::Length(3),
+        Constraint::Min(4),
         Constraint::Length(2),
         Constraint::Length(2),
         Constraint::Length(2),
     ])
     .split(inner);
     frame.render_widget(
-        Paragraph::new(format!("PolyTread can try {remediation}."))
-            .style(Style::default().fg(TEXT))
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                "DNS is the internet's address book.",
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "PolyTread cannot reach Polymarket through the DNS service this computer is using.",
+                Style::default().fg(MUTED),
+            )),
+        ]))
+        .wrap(Wrap { trim: true }),
         chunks[0],
     );
     frame.render_widget(
-        Paragraph::new(detail)
-            .style(Style::default().fg(MUTED))
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                "With your approval, PolyTread will:",
+                Style::default().fg(TEXT),
+            )),
+            Line::from(Span::styled(
+                "• use secure DNS for this connection and try again;",
+                Style::default().fg(MUTED),
+            )),
+            Line::from(Span::styled(
+                "• save your current DNS setting so it can be restored;",
+                Style::default().fg(MUTED),
+            )),
+            Line::from(Span::styled(
+                "• leave your public IP, wallet, funds, and trading permissions unchanged.",
+                Style::default().fg(MUTED),
+            )),
+        ]))
+        .wrap(Wrap { trim: true }),
         chunks[1],
     );
     let cursor = if tick % 10 < 6 { "▏" } else { "" };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("Type YES to approve: ", Style::default().fg(TEXT)),
+            Span::styled(
+                "Type YES to allow this DNS change: ",
+                Style::default().fg(TEXT),
+            ),
             Span::styled(value, Style::default().fg(WARNING)),
             Span::styled(cursor, Style::default().fg(WARNING)),
         ])),
         chunks[2],
     );
     frame.render_widget(
-        Paragraph::new(error.unwrap_or("Press Enter on an empty field to stop without changes."))
+        Paragraph::new(error.unwrap_or("Leave this empty and press Enter to stop safely."))
             .style(Style::default().fg(if error.is_some() { DANGER } else { MUTED })),
         chunks[3],
     );
-    render_fineprint(frame, chunks[4], "Press Enter to continue  •  Esc to exit");
+    render_dns_confirmation_fineprint(frame, chunks[4]);
+}
+
+fn render_dns_details_panel(frame: &mut Frame<'_>, remediation: &str, detail: &str) {
+    let area = modal_rect(frame.area(), 84, 22);
+    let block = modal_block(" DNS CHANGE DETAILS ", ACCENT);
+    let inner = inset(block.inner(area), 2, 1);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    let chunks = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(2),
+        Constraint::Length(3),
+        Constraint::Min(9),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+
+    render_detail_section(
+        frame,
+        chunks[0],
+        "WHY THIS APPEARED",
+        "This computer's normal DNS path could not reach Polymarket.",
+    );
+    render_detail_section(frame, chunks[1], "WHAT POLYTREAD WOULD CHANGE", remediation);
+    render_detail_section(
+        frame,
+        chunks[2],
+        "WHAT STAYS THE SAME",
+        "Your public IP, wallet, funds, trading permissions, and eligibility do not change.",
+    );
+
+    let technical = Text::from(vec![
+        Line::from(Span::styled(
+            "SAFETY & TECHNICAL DETAILS",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "Your current DNS setting is saved. If the retry fails, PolyTread restores it automatically.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(vec![
+            Span::styled("Manual undo: ", Style::default().fg(TEXT)),
+            Span::styled("polytread restore-dns", Style::default().fg(ACCENT)),
+        ]),
+        Line::from(Span::styled(
+            format!("Diagnostic: {detail}"),
+            Style::default().fg(MUTED),
+        )),
+    ]);
+    frame.render_widget(
+        Paragraph::new(technical).wrap(Wrap { trim: true }),
+        chunks[3],
+    );
+    render_fineprint(
+        frame,
+        chunks[4],
+        "Press Enter to continue  •  Esc to go back  •  Ctrl+C to exit setup",
+    );
+}
+
+fn render_detail_section(frame: &mut Frame<'_>, area: Rect, title: &str, body: &str) {
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                title,
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(body, Style::default().fg(TEXT))),
+        ]))
+        .wrap(Wrap { trim: true }),
+        area,
+    );
+}
+
+fn render_dns_confirmation_fineprint(frame: &mut Frame<'_>, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Press Enter to continue  •  ", Style::default().fg(MUTED)),
+            Span::styled(
+                "I",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " for more details  •  Esc to exit",
+                Style::default().fg(MUTED),
+            ),
+        ]))
+        .alignment(Alignment::Center),
+        area,
+    );
 }
 
 fn render_notice_panel(
@@ -1262,7 +1419,7 @@ fn render_browser_trading_panel(frame: &mut Frame<'_>, area: Rect, tick: u64) {
 }
 
 fn render_complete_panel(frame: &mut Frame<'_>, browser_trading: bool) {
-    let area = modal_rect(frame.area(), 78, 11);
+    let area = modal_rect(frame.area(), 78, 15);
     let block = modal_block(" SETUP COMPLETE ", SUCCESS);
     let inner = inset(block.inner(area), 2, 1);
     frame.render_widget(Clear, area);
@@ -1288,8 +1445,17 @@ fn render_complete_panel(frame: &mut Frame<'_>, browser_trading: bool) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "Press Enter to continue",
+            "Next: open the local dashboard and live runtime status.",
+            Style::default().fg(TEXT),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Press Enter to continue to the runtime dashboard",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "Esc saves setup and returns to the terminal",
+            Style::default().fg(MUTED),
         )),
     ]);
     frame.render_widget(
@@ -1593,7 +1759,7 @@ mod tests {
     }
 
     #[test]
-    fn dns_confirmation_and_required_system_step_render_completely() {
+    fn dns_confirmation_details_and_required_system_step_render_completely() {
         let mut progress = setup_progress();
         progress.complete(0, "Signer ready");
         progress.awaiting_input(1, "DNS resolution is unavailable");
@@ -1604,17 +1770,39 @@ mod tests {
                 4,
                 &progress,
                 ProgressPanel::DnsConfirmation {
-                    remediation: "a temporary DNS resolver change",
-                    detail: "The original DNS settings are saved for rollback.",
                     value: "YE",
                     error: Some("Type YES exactly, or clear the field to stop."),
                 },
             )
         });
-        assert!(dns.contains("CONNECTIVITY REMEDIATION"));
-        assert!(dns.contains("temporary DNS resolver change"));
+        assert!(dns.contains("SECURE CONNECTION HELP"));
+        assert!(dns.contains("DNS is the internet's address book"));
+        assert!(dns.contains("public IP, wallet, funds"));
+        assert!(dns.contains("trading"));
+        assert!(dns.contains("permissions"));
+        assert!(dns.contains("unchanged"));
         assert!(dns.contains("Type YES exactly"));
+        assert!(dns.contains("I for more details"));
         assert!(dns.contains("Press Enter to continue"));
+
+        let details = render_text(|frame| {
+            render_progress(
+                frame,
+                4,
+                &progress,
+                ProgressPanel::DnsDetails {
+                    remediation: "a temporary DNS resolver change",
+                    detail: "The original resolver timed out during the CLOB request.",
+                },
+            )
+        });
+        assert!(details.contains("DNS CHANGE DETAILS"));
+        assert!(details.contains("WHY THIS APPEARED"));
+        assert!(details.contains("temporary DNS resolver change"));
+        assert!(details.contains("polytread restore-dns"));
+        assert!(details.contains("original resolver timed out"));
+        assert!(details.contains("Esc to go back"));
+        assert!(details.contains("Press Enter to continue"));
 
         let required_step = render_text(|frame| {
             render_progress(
@@ -1635,6 +1823,22 @@ mod tests {
             required_step.contains("before closing"),
             "required-step screen:\n{required_step}"
         );
+    }
+
+    #[test]
+    fn dns_information_shortcut_is_unambiguous_and_reversible() {
+        let info = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE);
+        let shifted_info = KeyEvent::new(KeyCode::Char('I'), KeyModifiers::SHIFT);
+        let control_info = KeyEvent::new(KeyCode::Char('i'), KeyModifiers::CONTROL);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+
+        assert!(is_dns_details_key(info));
+        assert!(is_dns_details_key(shifted_info));
+        assert!(!is_dns_details_key(control_info));
+        assert!(is_dns_details_return_key(info));
+        assert!(is_dns_details_return_key(enter));
+        assert!(is_dns_details_return_key(escape));
     }
 
     #[test]
@@ -1660,6 +1864,10 @@ mod tests {
             enabled.contains("start disarmed"),
             "enabled completion screen:\n{enabled}"
         );
+        assert!(enabled.contains("live runtime status"));
+        assert!(enabled.contains("continue to the runtime dashboard"));
+        assert!(enabled.contains("Esc saves setup"));
+        assert!(!enabled.contains("Esc to cancel safely"));
         assert!(!enabled.contains("│erived signer"));
         assert!(enabled.contains("Press Enter to continue"));
 
@@ -1692,6 +1900,19 @@ mod tests {
     }
 
     #[test]
+    fn setup_completion_only_starts_runtime_on_enter() {
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let control_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let unrelated = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+
+        assert_eq!(setup_complete_action(enter), Some(true));
+        assert_eq!(setup_complete_action(escape), Some(false));
+        assert_eq!(setup_complete_action(control_c), Some(false));
+        assert_eq!(setup_complete_action(unrelated), None);
+    }
+
+    #[test]
     fn undersized_terminal_renders_resize_guidance() {
         let rendered = buffer_text(&render_buffer(79, 23, |frame| render_menu(frame, 0)));
         assert!(rendered.contains("Terminal too small"));
@@ -1713,9 +1934,7 @@ mod tests {
             "The system resolver differs from encrypted DNS, and a real CLOB request succeeds ",
             "through the encrypted-DNS destination. Browser Secure DNS may still work while ",
             "terminal applications fail. CLOB REST failed: connection timed out. Market REST ",
-            "failed: connection timed out. Market WebSocket timed out. This changes DNS ",
-            "resolution only, not your public IP or trading eligibility. PolyTread keeps a local ",
-            "rollback record for `polytread restore-dns`."
+            "failed: connection timed out. Market WebSocket timed out."
         );
         let dns = buffer_text(&render_buffer(80, 24, |frame| {
             render_progress(
@@ -1723,16 +1942,30 @@ mod tests {
                 0,
                 &progress,
                 ProgressPanel::DnsConfirmation {
-                    remediation: "Windows encrypted DNS on the active network adapter",
-                    detail: diagnostic,
                     value: "",
                     error: None,
                 },
             )
         }));
-        assert!(dns.contains("CONNECTIVITY REMEDIATION"));
-        assert!(dns.contains("polytread restore-dns"));
+        assert!(dns.contains("SECURE CONNECTION HELP"));
+        assert!(dns.contains("I for more details"));
         assert!(dns.contains("Press Enter to continue"));
+
+        let dns_details = buffer_text(&render_buffer(80, 24, |frame| {
+            render_progress(
+                frame,
+                0,
+                &progress,
+                ProgressPanel::DnsDetails {
+                    remediation: "Windows encrypted DNS on the active network adapter",
+                    detail: diagnostic,
+                },
+            )
+        }));
+        assert!(dns_details.contains("DNS CHANGE DETAILS"));
+        assert!(dns_details.contains("polytread restore-dns"));
+        assert!(dns_details.contains("Market WebSocket timed out"));
+        assert!(dns_details.contains("Press Enter to continue"));
 
         for index in 1..5 {
             progress.complete(index, "Complete");

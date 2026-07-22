@@ -46,8 +46,11 @@ polytread shutdown        # authenticated graceful shutdown
 polytread setup --force   # replace the saved local setup
 ```
 
-The dashboard URL is printed after the listener has successfully opened. It is normally
-[http://127.0.0.1:9878](http://127.0.0.1:9878).
+The dashboard URL appears only after the listener has successfully opened. On the returning-user
+runtime screen, press <kbd>C</kbd> to copy the complete private URL. Press <kbd>Esc</kbd>,
+<kbd>Q</kbd>, or <kbd>Ctrl</kbd>+<kbd>C</kbd> to close the view without stopping PolyTread; a
+verified no-console worker keeps it running. Use `polytread shutdown` when you intend to stop the
+service. The listener origin is normally [http://127.0.0.1:9878](http://127.0.0.1:9878).
 
 ## Claims
 

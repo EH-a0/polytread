@@ -1,17 +1,21 @@
+use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 use crate::config::ServeArgs;
 use crate::connectivity;
 use crate::discovery;
 use crate::feeds::{binance_spot, market, rtds_chainlink};
 use crate::history::HistoryStore;
+use crate::local_control;
 use crate::portfolio::{ClaimIntent, PortfolioState, run_portfolio_task};
 use crate::runtime_ui::{RuntimeAction, RuntimeLogLevel, RuntimeUi};
 use crate::state::{AppEvent, AppState, now_ms};
@@ -24,15 +28,100 @@ use crate::ws_dashboard::{
     TradeSide as WebTradeSide,
 };
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DashboardIdentity {
+    run_id: String,
+    access_token: String,
+}
+
+impl DashboardIdentity {
+    fn generate() -> Self {
+        Self {
+            run_id: Uuid::new_v4().simple().to_string(),
+            access_token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !is_hex_component(&self.run_id, 32) {
+            return Err(anyhow!("background dashboard run ID is invalid"));
+        }
+        if !is_hex_component(&self.access_token, 64) {
+            return Err(anyhow!("background dashboard access token is invalid"));
+        }
+        Ok(())
+    }
+
+    pub fn access_url(&self, address: impl fmt::Display) -> String {
+        format!(
+            "http://{address}/?run={}#access={}",
+            self.run_id, self.access_token
+        )
+    }
+
+    pub fn access_token(&self) -> &str {
+        &self.access_token
+    }
+}
+
+impl fmt::Debug for DashboardIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DashboardIdentity")
+            .field("run_id", &self.run_id)
+            .field("access_token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for DashboardIdentity {
+    fn drop(&mut self) {
+        self.run_id.zeroize();
+        self.access_token.zeroize();
+    }
+}
+
+fn is_hex_component(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub enum RunOutcome {
+    Stopped,
+    Detach {
+        identity: DashboardIdentity,
+        dashboard_url: String,
+    },
+}
+
 pub async fn run(args: ServeArgs) -> Result<()> {
-    run_inner(args, None).await
+    match run_inner(args, None, DashboardIdentity::generate()).await? {
+        RunOutcome::Stopped => Ok(()),
+        RunOutcome::Detach { .. } => Err(anyhow!(
+            "background handoff was requested without a runtime interface"
+        )),
+    }
 }
 
-pub async fn run_with_ui(args: ServeArgs, ui: &mut RuntimeUi) -> Result<()> {
-    run_inner(args, Some(ui)).await
+pub async fn run_with_ui(args: ServeArgs, ui: &mut RuntimeUi) -> Result<RunOutcome> {
+    run_inner(args, Some(ui), DashboardIdentity::generate()).await
 }
 
-async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) -> Result<()> {
+pub async fn run_background(args: ServeArgs, identity: DashboardIdentity) -> Result<()> {
+    identity.validate()?;
+    match run_inner(args, None, identity).await? {
+        RunOutcome::Stopped => Ok(()),
+        RunOutcome::Detach { .. } => Err(anyhow!(
+            "background worker unexpectedly requested another handoff"
+        )),
+    }
+}
+
+async fn run_inner(
+    mut args: ServeArgs,
+    mut runtime_ui: Option<&mut RuntimeUi>,
+    dashboard_identity: DashboardIdentity,
+) -> Result<RunOutcome> {
+    dashboard_identity.validate()?;
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -57,9 +146,7 @@ async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) 
     let (asset_tx, asset_rx) = watch::channel(Vec::<String>::new());
     let (shutdown_tx, _) = broadcast::channel::<()>(8);
     let (snapshot_tx, _) = broadcast::channel::<serde_json::Value>(64);
-    let dashboard_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let dashboard_run_id = Uuid::new_v4().simple();
-    let dashboard_url_token = dashboard_token.clone();
+    let dashboard_token = dashboard_identity.access_token.clone();
     let control_enabled = args.control_token.is_some();
     let (dashboard, mut command_rx, mut control_rx) = DashboardServer::new(
         snapshot_tx.clone(),
@@ -81,10 +168,9 @@ async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) 
             }
         }
     };
-    let dashboard_url =
-        format!("http://{local_addr}/?run={dashboard_run_id}#access={dashboard_url_token}");
+    let dashboard_url = dashboard_identity.access_url(local_addr);
     if let Some(ui) = runtime_ui.as_deref_mut() {
-        ui.dashboard_ready(dashboard_url)?;
+        ui.dashboard_ready(dashboard_url.clone())?;
     } else {
         println!("PolyTread dashboard: {dashboard_url}");
         println!("This local access link rotates whenever PolyTread restarts.");
@@ -92,6 +178,21 @@ async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) 
             println!("Stop safely from another terminal with: polytread shutdown");
         }
     }
+
+    let (local_shutdown_tx, mut local_shutdown_rx) = mpsc::channel(1);
+    let local_shutdown_task = if control_enabled {
+        match local_control::spawn_shutdown_listener(local_shutdown_tx) {
+            Ok(task) => task,
+            Err(error) => {
+                dashboard_task.abort();
+                let _ = dashboard_task.await;
+                return Err(error);
+            }
+        }
+    } else {
+        drop(local_shutdown_tx);
+        None
+    };
 
     let mut tasks = vec![
         tokio::spawn(binance_spot::run(
@@ -195,12 +296,14 @@ async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) 
         "PolyTread lightweight service started"
     );
 
+    let mut detach_requested = false;
     loop {
         tokio::select! {
             signal = tokio::signal::ctrl_c() => {
                 signal.context("failed waiting for Ctrl-C")?;
                 if let Some(ui) = runtime_ui.as_deref_mut() {
-                    ui.push_log(RuntimeLogLevel::Info, "Ctrl+C received; stopping safely");
+                    ui.push_log(RuntimeLogLevel::Info, "Closing this view; PolyTread will continue in the background");
+                    detach_requested = true;
                 }
                 break;
             }
@@ -220,6 +323,13 @@ async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) 
                         break;
                     }
                 }
+            }
+            Some(()) = local_shutdown_rx.recv() => {
+                info!("same-user local shutdown requested");
+                if let Some(ui) = runtime_ui.as_deref_mut() {
+                    ui.push_log(RuntimeLogLevel::Info, "Authenticated shutdown requested");
+                }
+                break;
             }
             dashboard_result = &mut dashboard_task => {
                 match dashboard_result {
@@ -279,8 +389,9 @@ async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) 
                     .as_deref_mut()
                     .expect("runtime UI exists when its select branch is enabled")
                     .tick_status()?
-                    == RuntimeAction::Shutdown
+                    == RuntimeAction::Detach
                 {
+                    detach_requested = true;
                     break;
                 }
             }
@@ -289,14 +400,34 @@ async fn run_inner(mut args: ServeArgs, mut runtime_ui: Option<&mut RuntimeUi>) 
 
     let _ = shutdown_tx.send(());
     dashboard_task.abort();
+    let _ = dashboard_task.await;
+    if let Some(task) = local_shutdown_task {
+        task.abort();
+        let _ = task.await;
+    }
     for task in tasks {
         let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
     }
     if let Some(ui) = runtime_ui {
-        ui.push_log(RuntimeLogLevel::Success, "PolyTread stopped safely");
+        if detach_requested {
+            ui.push_log(
+                RuntimeLogLevel::Info,
+                "Runtime view closed; starting the background worker",
+            );
+        } else {
+            ui.push_log(RuntimeLogLevel::Success, "PolyTread stopped safely");
+        }
     }
-    info!("PolyTread service stopped");
-    Ok(())
+    if detach_requested {
+        info!("PolyTread foreground service prepared for background handoff");
+        Ok(RunOutcome::Detach {
+            identity: dashboard_identity,
+            dashboard_url,
+        })
+    } else {
+        info!("PolyTread service stopped");
+        Ok(RunOutcome::Stopped)
+    }
 }
 
 async fn run_discovery(
@@ -582,5 +713,27 @@ mod tests {
                 "DOWN"
             )
         );
+    }
+
+    #[test]
+    fn dashboard_identity_can_be_reused_without_exposing_its_access_token() {
+        let identity = DashboardIdentity::generate();
+        identity.validate().expect("generated dashboard identity");
+        let url = identity.access_url("127.0.0.1:9878");
+
+        assert!(url.contains("http://127.0.0.1:9878/?run="));
+        assert!(url.ends_with(identity.access_token()));
+        let debug = format!("{identity:?}");
+        assert!(!debug.contains(identity.access_token()));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn background_dashboard_identity_rejects_malformed_components() {
+        let invalid = DashboardIdentity {
+            run_id: "not-a-uuid".to_string(),
+            access_token: "short".to_string(),
+        };
+        assert!(invalid.validate().is_err());
     }
 }

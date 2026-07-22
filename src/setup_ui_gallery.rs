@@ -198,9 +198,7 @@ fn gallery_shots() -> Vec<GalleryShot> {
         "The system resolver differs from encrypted DNS, and a real CLOB request succeeds ",
         "through the encrypted-DNS destination. Browser Secure DNS may still work while ",
         "terminal applications fail. CLOB REST failed: connection timed out. Market REST ",
-        "failed: connection timed out. Market WebSocket timed out. This changes DNS ",
-        "resolution only, not your public IP or trading eligibility. PolyTread keeps a local ",
-        "rollback record for `polytread restore-dns`."
+        "failed: connection timed out. Market WebSocket timed out."
     );
     let remediation = "Windows encrypted DNS on the active network adapter";
     let mut progress = setup_progress();
@@ -210,13 +208,22 @@ fn gallery_shots() -> Vec<GalleryShot> {
         "dns-acknowledgement-empty",
         "Connectivity and DNS",
         "DNS acknowledgement — initial",
-        "The user can approve explicitly or press Enter empty to stop without changes.",
+        "Plain-language approval with an optional shortcut to the technical explanation.",
         &progress,
         ProgressPanel::DnsConfirmation {
-            remediation,
-            detail: diagnostic,
             value: "",
             error: None,
+        },
+    ));
+    shots.push(progress_shot(
+        "dns-change-details",
+        "Connectivity and DNS",
+        "DNS acknowledgement — more details",
+        "The optional technical and rollback explanation opened with the I key.",
+        &progress,
+        ProgressPanel::DnsDetails {
+            remediation,
+            detail: diagnostic,
         },
     ));
     shots.push(progress_shot(
@@ -226,8 +233,6 @@ fn gallery_shots() -> Vec<GalleryShot> {
         "The exact acknowledgement immediately before approval is submitted.",
         &progress,
         ProgressPanel::DnsConfirmation {
-            remediation,
-            detail: diagnostic,
             value: "YES",
             error: None,
         },
@@ -239,8 +244,6 @@ fn gallery_shots() -> Vec<GalleryShot> {
         "Recovery guidance after a value other than exact YES is submitted.",
         &progress,
         ProgressPanel::DnsConfirmation {
-            remediation,
-            detail: diagnostic,
             value: "YEP",
             error: Some("Type YES exactly, or clear the field to stop."),
         },

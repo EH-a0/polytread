@@ -31,7 +31,9 @@ pub const MAX_LOG_ENTRIES: usize = 200;
 const MAX_LOG_MESSAGE_CHARS: usize = 240;
 const MIN_TERMINAL_WIDTH: u16 = 80;
 const MIN_TERMINAL_HEIGHT: u16 = 24;
-const MAX_CARD_WIDTH: u16 = 104;
+const MAX_CARD_WIDTH: u16 = 96;
+const COPY_NOTICE_FRAMES: u16 = 40;
+const STATUS_PULSE_FRAMES: u64 = 32;
 
 // This palette deliberately matches the first-run TUI and browser dashboard.
 const BACKGROUND: Color = Color::Rgb(0, 0, 0);
@@ -177,7 +179,14 @@ enum RuntimeHealth {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeAction {
     Continue,
-    Shutdown,
+    Detach,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DashboardNotice {
+    message: String,
+    level: RuntimeLogLevel,
+    frames_remaining: u16,
 }
 
 pub struct RuntimeUi {
@@ -185,6 +194,7 @@ pub struct RuntimeUi {
     tick: u64,
     progress: LaunchProgress,
     dashboard_url: Option<String>,
+    dashboard_notice: Option<DashboardNotice>,
     logs: VecDeque<RuntimeLog>,
     connectivity: Option<ConnectivityStatus>,
     feeds: BTreeMap<FeedKind, FeedObservation>,
@@ -219,6 +229,7 @@ impl RuntimeUi {
             tick: 0,
             progress: LaunchProgress::new(labels),
             dashboard_url: None,
+            dashboard_notice: None,
             logs: VecDeque::with_capacity(MAX_LOG_ENTRIES),
             connectivity: None,
             feeds: BTreeMap::new(),
@@ -428,21 +439,62 @@ impl RuntimeUi {
         while event::poll(Duration::ZERO).context("failed to poll runtime TUI input")? {
             if let Event::Key(key) = event::read().context("failed to read runtime TUI input")?
                 && is_actionable_key(key)
-                && (is_cancel_key(key) || matches!(key.code, KeyCode::Char('q' | 'Q')))
             {
-                self.push_log(RuntimeLogLevel::Info, "Graceful shutdown requested");
-                self.draw_status()?;
-                return Ok(RuntimeAction::Shutdown);
+                if is_runtime_detach_key(key) {
+                    self.push_log(
+                        RuntimeLogLevel::Info,
+                        "Closing this view; PolyTread will continue in the background",
+                    );
+                    self.draw_status()?;
+                    return Ok(RuntimeAction::Detach);
+                }
+                if is_copy_key(key) {
+                    self.copy_dashboard_url();
+                    self.draw_status()?;
+                }
             }
         }
+        self.advance_dashboard_notice();
         Ok(RuntimeAction::Continue)
+    }
+
+    fn copy_dashboard_url(&mut self) {
+        let result = self
+            .dashboard_url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("dashboard link is not ready"))
+            .and_then(copy_text_to_clipboard);
+        let (message, level) = match result {
+            Ok(()) => (
+                "Complete private URL copied to the clipboard".to_string(),
+                RuntimeLogLevel::Success,
+            ),
+            Err(_) => (
+                "Clipboard unavailable — press Esc to print the complete URL".to_string(),
+                RuntimeLogLevel::Warning,
+            ),
+        };
+        self.dashboard_notice = Some(DashboardNotice {
+            message,
+            level,
+            frames_remaining: COPY_NOTICE_FRAMES,
+        });
+    }
+
+    fn advance_dashboard_notice(&mut self) {
+        let Some(notice) = self.dashboard_notice.as_mut() else {
+            return;
+        };
+        notice.frames_remaining = notice.frames_remaining.saturating_sub(1);
+        if notice.frames_remaining == 0 {
+            self.dashboard_notice = None;
+        }
     }
 
     pub fn show_failure(&mut self, error: &str) -> Result<()> {
         loop {
-            let tick = self.tick;
             self.terminal
-                .draw(|frame| render_failure(frame, tick, error))
+                .draw(|frame| render_failure(frame, error))
                 .context("failed to draw the PolyTread failure screen")?;
             if event::poll(FRAME_INTERVAL).context("failed to poll runtime TUI input")?
                 && let Event::Key(key) =
@@ -474,8 +526,19 @@ impl RuntimeUi {
         let health = self.health();
         let health_detail = self.health_detail(health);
         let logs = &self.logs;
+        let dashboard_notice = self.dashboard_notice.as_ref();
         self.terminal
-            .draw(|frame| render_runtime(frame, tick, dashboard_url, health, &health_detail, logs))
+            .draw(|frame| {
+                render_runtime(
+                    frame,
+                    tick,
+                    dashboard_url,
+                    dashboard_notice,
+                    health,
+                    &health_detail,
+                    logs,
+                )
+            })
             .context("failed to draw the PolyTread runtime screen")?;
         Ok(())
     }
@@ -517,12 +580,8 @@ impl RuntimeUi {
         let connected = self.feeds.values().filter(|feed| feed.connected).count();
         let total = self.feeds.len().max(3);
         match health {
-            RuntimeHealth::Starting => {
-                format!("Starting live services • {connected}/{total} feeds connected")
-            }
-            RuntimeHealth::Active => {
-                format!("Dashboard healthy • {connected}/{total} live feeds connected")
-            }
+            RuntimeHealth::Starting => format!("Connecting feeds • {connected}/{total} ready"),
+            RuntimeHealth::Active => format!("{connected}/{total} live feeds connected"),
             RuntimeHealth::Degraded => self
                 .connectivity
                 .as_ref()
@@ -558,6 +617,22 @@ fn is_actionable_key(key: KeyEvent) -> bool {
 fn is_cancel_key(key: KeyEvent) -> bool {
     key.code == KeyCode::Esc
         || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+}
+
+fn is_runtime_detach_key(key: KeyEvent) -> bool {
+    is_cancel_key(key) || matches!(key.code, KeyCode::Char('q' | 'Q'))
+}
+
+fn is_copy_key(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('c' | 'C')) && !key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn copy_text_to_clipboard(text: &str) -> Result<()> {
+    let mut clipboard =
+        arboard::Clipboard::new().context("operating-system clipboard is unavailable")?;
+    clipboard
+        .set_text(text.to_string())
+        .context("failed copying the dashboard link")
 }
 
 fn render_launch(frame: &mut Frame<'_>, tick: u64, progress: &LaunchProgress) {
@@ -702,6 +777,7 @@ fn render_runtime(
     frame: &mut Frame<'_>,
     tick: u64,
     dashboard_url: &str,
+    dashboard_notice: Option<&DashboardNotice>,
     health: RuntimeHealth,
     health_detail: &str,
     logs: &VecDeque<RuntimeLog>,
@@ -710,44 +786,58 @@ fn render_runtime(
     if render_size_warning(frame) {
         return;
     }
-    let card = centered_rect(frame.area(), MAX_CARD_WIDTH, 30);
+    let card = centered_rect(frame.area(), MAX_CARD_WIDTH, 26);
     let block = card_block(" POLYTREAD RUNTIME ", ACCENT);
     let inner = inset(block.inner(card), 2, 1);
     frame.render_widget(block, card);
     let chunks = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(2),
         Constraint::Length(5),
+        Constraint::Length(1),
         Constraint::Length(3),
-        Constraint::Min(5),
+        Constraint::Length(1),
+        Constraint::Min(4),
         Constraint::Length(2),
     ])
     .split(inner);
 
-    render_brand(frame, chunks[0], tick);
-    render_dashboard_link(frame, chunks[1], dashboard_url);
-    render_health(frame, chunks[2], tick, health, health_detail);
-    render_logs(frame, chunks[3], logs);
-    render_fineprint(
-        frame,
-        chunks[4],
-        "Q / Esc / Ctrl+C: stop safely  •  Logs keep newest 200 entries",
-    );
+    render_runtime_brand(frame, chunks[0]);
+    render_dashboard_link(frame, chunks[1], dashboard_url, dashboard_notice);
+    render_health(frame, chunks[3], tick, health, health_detail);
+    render_logs(frame, chunks[5], logs);
+    render_runtime_footer(frame, chunks[6]);
 }
 
-fn render_dashboard_link(frame: &mut Frame<'_>, area: Rect, dashboard_url: &str) {
-    let block = modal_block(" LOCAL WEB DASHBOARD ", ACCENT);
+fn render_dashboard_link(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    dashboard_url: &str,
+    dashboard_notice: Option<&DashboardNotice>,
+) {
+    let block = modal_block(" DASHBOARD ", ACCENT);
     let inner = inset(block.inner(area), 1, 0);
     frame.render_widget(block, area);
+    let access_offset = dashboard_url
+        .find("#access=")
+        .unwrap_or(dashboard_url.len());
+    let (address, private_access) = dashboard_url.split_at(access_offset);
+    let (notice, notice_color) =
+        dashboard_notice.map_or(("C  Copy complete private URL", MUTED), |notice| {
+            let color = match notice.level {
+                RuntimeLogLevel::Success => SUCCESS,
+                RuntimeLogLevel::Warning => WARNING,
+                RuntimeLogLevel::Error => DANGER,
+                RuntimeLogLevel::Info => MUTED,
+            };
+            (notice.message.as_str(), color)
+        });
     frame.render_widget(
         Paragraph::new(Text::from(vec![
-            Line::from(Span::styled(
-                dashboard_url,
-                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                "Open this complete local link. It rotates on every restart.",
-                Style::default().fg(MUTED),
-            )),
+            Line::from(vec![
+                Span::styled(address, Style::default().fg(TEXT)),
+                Span::styled(private_access, Style::default().fg(MUTED)),
+            ]),
+            Line::from(Span::styled(notice, Style::default().fg(notice_color))),
         ]))
         .wrap(Wrap { trim: false }),
         inner,
@@ -767,11 +857,11 @@ fn render_health(
         RuntimeHealth::Degraded => ("DEGRADED", WARNING, Color::Rgb(120, 96, 0)),
         RuntimeHealth::Attention => ("ATTENTION", DANGER, Color::Rgb(128, 38, 48)),
     };
-    let indicator_color = if tick % 10 < 5 { bright } else { dim };
+    let indicator_color = smooth_status_pulse(tick, dim, bright);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(indicator_color))
+        .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(SURFACE_RAISED));
     let inner = inset(block.inner(area), 1, 0);
     frame.render_widget(block, area);
@@ -789,7 +879,7 @@ fn render_health(
 }
 
 fn render_logs(frame: &mut Frame<'_>, area: Rect, logs: &VecDeque<RuntimeLog>) {
-    let block = modal_block(" RECENT LOGS • ROLLING 200 ", BORDER);
+    let block = modal_block(" ACTIVITY • LATEST 200 ", BORDER);
     let inner = inset(block.inner(area), 1, 0);
     frame.render_widget(block, area);
     let visible_rows = inner.height as usize;
@@ -818,7 +908,7 @@ fn render_logs(frame: &mut Frame<'_>, area: Rect, logs: &VecDeque<RuntimeLog>) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_failure(frame: &mut Frame<'_>, tick: u64, error: &str) {
+fn render_failure(frame: &mut Frame<'_>, error: &str) {
     render_background(frame);
     if render_size_warning(frame) {
         return;
@@ -835,7 +925,7 @@ fn render_failure(frame: &mut Frame<'_>, tick: u64, error: &str) {
         Constraint::Length(2),
     ])
     .split(inner);
-    render_brand(frame, chunks[0], tick);
+    render_brand(frame, chunks[0]);
     frame.render_widget(
         Paragraph::new("No permissions or system settings were changed.")
             .style(Style::default().fg(DANGER).add_modifier(Modifier::BOLD))
@@ -886,14 +976,38 @@ fn render_size_warning(frame: &mut Frame<'_>) -> bool {
     true
 }
 
-fn render_brand(frame: &mut Frame<'_>, area: Rect, tick: u64) {
+fn render_runtime_brand(frame: &mut Frame<'_>, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "POLYTREAD",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  /  LOCAL • PRIVATE • MANUAL", Style::default().fg(MUTED)),
+        ]))
+        .alignment(Alignment::Center),
+        area,
+    );
+}
+
+fn render_runtime_footer(frame: &mut Frame<'_>, area: Rect) {
+    frame.render_widget(
+        Paragraph::new(Text::from(vec![
+            Line::from("C: copy URL  •  Esc / Q / Ctrl+C: close this view"),
+            Line::from("Service keeps running  •  Stop: polytread shutdown"),
+        ]))
+        .style(Style::default().fg(MUTED))
+        .alignment(Alignment::Center),
+        area,
+    );
+}
+
+fn render_brand(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(
         Paragraph::new(Text::from(vec![
             Line::from(Span::styled(
                 "P O L Y T R E A D",
-                Style::default()
-                    .fg(pulse_color(tick))
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "LOCAL • PRIVATE • MANUAL",
@@ -974,6 +1088,28 @@ fn pulse_color(tick: u64) -> Color {
     PULSE[tick as usize % PULSE.len()]
 }
 
+fn smooth_status_pulse(tick: u64, dim: Color, bright: Color) -> Color {
+    let phase = (tick % STATUS_PULSE_FRAMES) as f64 / STATUS_PULSE_FRAMES as f64;
+    let blend = (1.0 - (phase * std::f64::consts::TAU).cos()) / 2.0;
+    blend_color(dim, bright, blend)
+}
+
+fn blend_color(from: Color, to: Color, amount: f64) -> Color {
+    let (Color::Rgb(from_r, from_g, from_b), Color::Rgb(to_r, to_g, to_b)) = (from, to) else {
+        return to;
+    };
+    let channel = |from: u8, to: u8| {
+        (f64::from(from) + (f64::from(to) - f64::from(from)) * amount)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    Color::Rgb(
+        channel(from_r, to_r),
+        channel(from_g, to_g),
+        channel(from_b, to_b),
+    )
+}
+
 fn truncate_log_message(message: &str) -> String {
     let mut chars = message.chars();
     let mut truncated = chars
@@ -1017,12 +1153,12 @@ mod tests {
         output
     }
 
-    fn buffer_has_foreground(buffer: &Buffer, color: Color) -> bool {
+    fn foreground_for_symbol(buffer: &Buffer, symbol: &str) -> Option<Color> {
         let area = buffer.area;
-        (area.y..area.bottom()).any(|y| {
-            (area.x..area.right()).any(|x| {
+        (area.y..area.bottom()).find_map(|y| {
+            (area.x..area.right()).find_map(|x| {
                 let cell = &buffer[(x, y)];
-                cell.fg == color && cell.symbol() != " "
+                (cell.symbol() == symbol).then_some(cell.fg)
             })
         })
     }
@@ -1080,44 +1216,43 @@ mod tests {
                 frame,
                 0,
                 "http://127.0.0.1:9878/?run=abc#access=secret",
+                None,
                 RuntimeHealth::Active,
-                "Dashboard healthy • 3/3 live feeds connected",
+                "3/3 live feeds connected",
                 &logs(),
             )
         }));
-        assert!(rendered.contains("LOCAL WEB DASHBOARD"));
+        assert!(rendered.contains("DASHBOARD"));
         assert!(rendered.contains("http://127.0.0.1:9878/?run=abc#access=secret"));
+        assert!(rendered.contains("Copy complete private URL"));
         assert!(rendered.contains("ACTIVE"));
-        assert!(rendered.contains("RECENT LOGS • ROLLING 200"));
+        assert!(rendered.contains("ACTIVITY • LATEST 200"));
         assert!(rendered.contains("Saved permission prompt skipped"));
-        assert!(rendered.contains("newest 200 entries"));
-        assert!(rendered.contains("Q / Esc / Ctrl+C: stop safely"));
+        assert!(rendered.contains("close this view"));
+        assert!(rendered.contains("Service keeps running"));
+        assert!(rendered.contains("Stop: polytread shutdown"));
     }
 
     #[test]
-    fn active_indicator_flashes_between_bright_and_dim_green() {
-        let bright = render_buffer(100, 30, |frame| {
-            render_runtime(
-                frame,
-                0,
-                "http://127.0.0.1:9878/",
-                RuntimeHealth::Active,
-                "Healthy",
-                &logs(),
-            )
-        });
-        let dim = render_buffer(100, 30, |frame| {
-            render_runtime(
-                frame,
-                6,
-                "http://127.0.0.1:9878/",
-                RuntimeHealth::Active,
-                "Healthy",
-                &logs(),
-            )
-        });
-        assert!(buffer_has_foreground(&bright, SUCCESS));
-        assert!(buffer_has_foreground(&dim, Color::Rgb(0, 112, 60)));
+    fn only_the_status_dot_pulses_and_the_box_stays_steady() {
+        let frames = [0, 4, 8, 12, 16]
+            .into_iter()
+            .map(|tick| {
+                render_buffer(60, 3, |frame| {
+                    let area = frame.area();
+                    render_health(frame, area, tick, RuntimeHealth::Active, "3/3 feeds")
+                })
+            })
+            .collect::<Vec<_>>();
+        let dot_colors = frames
+            .iter()
+            .map(|buffer| foreground_for_symbol(buffer, "●").expect("status dot"))
+            .collect::<Vec<_>>();
+
+        assert!(dot_colors.windows(2).all(|pair| pair[0] != pair[1]));
+        assert_eq!(dot_colors.first().copied(), Some(Color::Rgb(0, 112, 60)));
+        assert_eq!(dot_colors.last().copied(), Some(SUCCESS));
+        assert!(frames.iter().all(|buffer| buffer[(0, 0)].fg == BORDER));
     }
 
     #[test]
@@ -1169,16 +1304,18 @@ mod tests {
                     "http://127.0.0.1:9878/?run=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "#access=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 ),
+                None,
                 RuntimeHealth::Starting,
                 "Starting live services",
                 &logs(),
             )
         }));
-        assert!(rendered.contains("LOCAL WEB DASHBOARD"));
-        assert!(rendered.contains("Open this complete local link"));
+        assert!(rendered.contains("DASHBOARD"));
+        assert!(rendered.contains("Copy complete private URL"));
         assert!(rendered.contains("STARTING"));
-        assert!(rendered.contains("RECENT LOGS"));
-        assert!(rendered.contains("Ctrl+C: stop safely"));
+        assert!(rendered.contains("ACTIVITY"));
+        assert!(rendered.contains("Ctrl+C: close this view"));
+        assert!(rendered.contains("Service keeps running"));
     }
 
     #[test]
@@ -1188,6 +1325,7 @@ mod tests {
                 frame,
                 0,
                 "http://127.0.0.1:9878/",
+                None,
                 RuntimeHealth::Starting,
                 "Starting",
                 &logs(),
@@ -1203,5 +1341,20 @@ mod tests {
             dashboard_display_origin("http://127.0.0.1:9878/?run=abc#access=secret"),
             "http://127.0.0.1:9878/"
         );
+    }
+
+    #[test]
+    fn runtime_keys_copy_or_detach_without_claiming_to_stop_the_service() {
+        let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let copy = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE);
+
+        assert!(is_runtime_detach_key(escape));
+        assert!(is_runtime_detach_key(quit));
+        assert!(is_runtime_detach_key(ctrl_c));
+        assert!(!is_runtime_detach_key(copy));
+        assert!(is_copy_key(copy));
+        assert!(!is_copy_key(ctrl_c));
     }
 }

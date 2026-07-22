@@ -6,6 +6,7 @@ mod discovery;
 mod dns_remediation;
 mod feeds;
 mod history;
+mod local_control;
 mod portfolio;
 mod runtime_ui;
 mod setup_ui;
@@ -34,11 +35,12 @@ async fn main() -> Result<()> {
 
     match cli.command {
         None => consumer::start().await,
-        Some(Command::Setup(args)) => consumer::setup(args.force).await.map(|_| ()),
+        Some(Command::Setup(args)) => consumer::setup_and_start(args.force).await,
         Some(Command::Shutdown) => consumer::shutdown().await,
         Some(Command::Status) => consumer::status().await,
         Some(Command::Diagnose) => consumer::diagnose().await,
         Some(Command::RestoreDns) => consumer::restore_dns().await,
+        Some(Command::BackgroundWorker) => consumer::background_worker().await,
         Some(Command::Serve(mut args)) => {
             trading::inject_private_key_from_env(&mut args.trading)?;
             app::run(args).await
