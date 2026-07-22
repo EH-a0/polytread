@@ -1,29 +1,127 @@
+use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::MissedTickBehavior;
 use tracing::{info, warn};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 use crate::config::ServeArgs;
 use crate::connectivity;
 use crate::discovery;
 use crate::feeds::{binance_spot, market, rtds_chainlink};
 use crate::history::HistoryStore;
+use crate::local_control;
 use crate::portfolio::{ClaimIntent, PortfolioState, run_portfolio_task};
+use crate::runtime_ui::{RuntimeAction, RuntimeLogLevel, RuntimeUi};
 use crate::state::{AppEvent, AppState, now_ms};
 use crate::trading::{
-    NOMINAL_VALUES, OrderSide, TradeIntent, TradeSide, TradingMechanism, run_trading_task,
-    runtime_config_from_args,
+    MIN_MAKER_SESSION_REMAINING_MS, NOMINAL_VALUES, OrderSide, TradeIntent, TradeSide,
+    TradingMechanism, run_trading_task, runtime_config_from_args,
 };
 use crate::ws_dashboard::{
     DashboardCmd, DashboardCommand, DashboardControl, DashboardServer, Mechanism as WebMechanism,
     TradeSide as WebTradeSide,
 };
 
-pub async fn run(mut args: ServeArgs) -> Result<()> {
+#[derive(Clone, Serialize, Deserialize)]
+pub struct DashboardIdentity {
+    run_id: String,
+    access_token: String,
+}
+
+impl DashboardIdentity {
+    fn generate() -> Self {
+        Self {
+            run_id: Uuid::new_v4().simple().to_string(),
+            access_token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !is_hex_component(&self.run_id, 32) {
+            return Err(anyhow!("background dashboard run ID is invalid"));
+        }
+        if !is_hex_component(&self.access_token, 64) {
+            return Err(anyhow!("background dashboard access token is invalid"));
+        }
+        Ok(())
+    }
+
+    pub fn access_url(&self, address: impl fmt::Display) -> String {
+        format!(
+            "http://{address}/?run={}#access={}",
+            self.run_id, self.access_token
+        )
+    }
+
+    pub fn access_token(&self) -> &str {
+        &self.access_token
+    }
+}
+
+impl fmt::Debug for DashboardIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DashboardIdentity")
+            .field("run_id", &self.run_id)
+            .field("access_token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Drop for DashboardIdentity {
+    fn drop(&mut self) {
+        self.run_id.zeroize();
+        self.access_token.zeroize();
+    }
+}
+
+fn is_hex_component(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub enum RunOutcome {
+    Stopped,
+    Detach {
+        identity: DashboardIdentity,
+        dashboard_url: String,
+    },
+}
+
+pub async fn run(args: ServeArgs) -> Result<()> {
+    match run_inner(args, None, DashboardIdentity::generate()).await? {
+        RunOutcome::Stopped => Ok(()),
+        RunOutcome::Detach { .. } => Err(anyhow!(
+            "background handoff was requested without a runtime interface"
+        )),
+    }
+}
+
+pub async fn run_with_ui(args: ServeArgs, ui: &mut RuntimeUi) -> Result<RunOutcome> {
+    run_inner(args, Some(ui), DashboardIdentity::generate()).await
+}
+
+pub async fn run_background(args: ServeArgs, identity: DashboardIdentity) -> Result<()> {
+    identity.validate()?;
+    match run_inner(args, None, identity).await? {
+        RunOutcome::Stopped => Ok(()),
+        RunOutcome::Detach { .. } => Err(anyhow!(
+            "background worker unexpectedly requested another handoff"
+        )),
+    }
+}
+
+async fn run_inner(
+    mut args: ServeArgs,
+    mut runtime_ui: Option<&mut RuntimeUi>,
+    dashboard_identity: DashboardIdentity,
+) -> Result<RunOutcome> {
+    dashboard_identity.validate()?;
     let client = Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -48,8 +146,7 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
     let (asset_tx, asset_rx) = watch::channel(Vec::<String>::new());
     let (shutdown_tx, _) = broadcast::channel::<()>(8);
     let (snapshot_tx, _) = broadcast::channel::<serde_json::Value>(64);
-    let dashboard_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let dashboard_url_token = dashboard_token.clone();
+    let dashboard_token = dashboard_identity.access_token.clone();
     let control_enabled = args.control_token.is_some();
     let (dashboard, mut command_rx, mut control_rx) = DashboardServer::new(
         snapshot_tx.clone(),
@@ -71,11 +168,31 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
             }
         }
     };
-    println!("PolyTread dashboard: http://{local_addr}/#access={dashboard_url_token}");
-    println!("This local access link rotates whenever PolyTread restarts.");
-    if control_enabled {
-        println!("Stop safely from another terminal with: polytread shutdown");
+    let dashboard_url = dashboard_identity.access_url(local_addr);
+    if let Some(ui) = runtime_ui.as_deref_mut() {
+        ui.dashboard_ready(dashboard_url.clone())?;
+    } else {
+        println!("PolyTread dashboard: {dashboard_url}");
+        println!("This local access link rotates whenever PolyTread restarts.");
+        if control_enabled {
+            println!("Stop safely from another terminal with: polytread shutdown");
+        }
     }
+
+    let (local_shutdown_tx, mut local_shutdown_rx) = mpsc::channel(1);
+    let local_shutdown_task = if control_enabled {
+        match local_control::spawn_shutdown_listener(local_shutdown_tx) {
+            Ok(task) => task,
+            Err(error) => {
+                dashboard_task.abort();
+                let _ = dashboard_task.await;
+                return Err(error);
+            }
+        }
+    } else {
+        drop(local_shutdown_tx);
+        None
+    };
 
     let mut tasks = vec![
         tokio::spawn(binance_spot::run(
@@ -106,6 +223,12 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
             shutdown_tx.subscribe(),
         )),
     ];
+    if let Some(ui) = runtime_ui.as_deref_mut() {
+        ui.push_log(
+            RuntimeLogLevel::Info,
+            "Market feeds, discovery, and connectivity monitors started",
+        );
+    }
 
     let mut trading_order_tx = None;
     let mut claim_tx = None;
@@ -140,12 +263,20 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
             args.polygon_rpc_url.clone(),
         )));
         claim_tx = Some(portfolio_claim_tx);
+        if let Some(ui) = runtime_ui.as_deref_mut() {
+            ui.push_log(
+                RuntimeLogLevel::Info,
+                "Trading and portfolio services started in disarmed mode",
+            );
+        }
     }
 
     let mut sample_tick = tokio::time::interval(Duration::from_secs(1));
     sample_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut snapshot_tick = tokio::time::interval(Duration::from_millis(500));
     snapshot_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut runtime_ui_tick = tokio::time::interval(crate::runtime_ui::FRAME_INTERVAL);
+    runtime_ui_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let deadline = args
         .duration_seconds
         .map(|seconds| tokio::time::Instant::now() + Duration::from_secs(seconds));
@@ -165,20 +296,40 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
         "PolyTread lightweight service started"
     );
 
+    let mut detach_requested = false;
     loop {
         tokio::select! {
             signal = tokio::signal::ctrl_c() => {
                 signal.context("failed waiting for Ctrl-C")?;
+                if let Some(ui) = runtime_ui.as_deref_mut() {
+                    ui.push_log(RuntimeLogLevel::Info, "Closing this view; PolyTread will continue in the background");
+                    detach_requested = true;
+                }
                 break;
             }
-            _ = &mut deadline_future => break,
+            _ = &mut deadline_future => {
+                if let Some(ui) = runtime_ui.as_deref_mut() {
+                    ui.push_log(RuntimeLogLevel::Info, "Configured runtime duration completed");
+                }
+                break;
+            },
             Some(control) = control_rx.recv() => {
                 match control {
                     DashboardControl::Shutdown => {
                         info!("authenticated local shutdown requested");
+                        if let Some(ui) = runtime_ui.as_deref_mut() {
+                            ui.push_log(RuntimeLogLevel::Info, "Authenticated shutdown requested");
+                        }
                         break;
                     }
                 }
+            }
+            Some(()) = local_shutdown_rx.recv() => {
+                info!("same-user local shutdown requested");
+                if let Some(ui) = runtime_ui.as_deref_mut() {
+                    ui.push_log(RuntimeLogLevel::Info, "Authenticated shutdown requested");
+                }
+                break;
             }
             dashboard_result = &mut dashboard_task => {
                 match dashboard_result {
@@ -188,6 +339,9 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
                 }
             }
             Some(event) = event_rx.recv() => {
+                if let Some(ui) = runtime_ui.as_deref_mut() {
+                    ui.observe_event(&event);
+                }
                 let effects = state.apply(event);
                 if let Some(assets) = effects.market_assets {
                     asset_tx.send_replace(assets);
@@ -230,16 +384,50 @@ pub async fn run(mut args: ServeArgs) -> Result<()> {
                     .context("failed serializing dashboard snapshot")?;
                 let _ = snapshot_tx.send(snapshot);
             }
+            _ = runtime_ui_tick.tick(), if runtime_ui.is_some() => {
+                if runtime_ui
+                    .as_deref_mut()
+                    .expect("runtime UI exists when its select branch is enabled")
+                    .tick_status()?
+                    == RuntimeAction::Detach
+                {
+                    detach_requested = true;
+                    break;
+                }
+            }
         }
     }
 
     let _ = shutdown_tx.send(());
     dashboard_task.abort();
+    let _ = dashboard_task.await;
+    if let Some(task) = local_shutdown_task {
+        task.abort();
+        let _ = task.await;
+    }
     for task in tasks {
         let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
     }
-    info!("PolyTread service stopped");
-    Ok(())
+    if let Some(ui) = runtime_ui {
+        if detach_requested {
+            ui.push_log(
+                RuntimeLogLevel::Info,
+                "Runtime view closed; starting the background worker",
+            );
+        } else {
+            ui.push_log(RuntimeLogLevel::Success, "PolyTread stopped safely");
+        }
+    }
+    if detach_requested {
+        info!("PolyTread foreground service prepared for background handoff");
+        Ok(RunOutcome::Detach {
+            identity: dashboard_identity,
+            dashboard_url,
+        })
+    } else {
+        info!("PolyTread service stopped");
+        Ok(RunOutcome::Stopped)
+    }
 }
 
 async fn run_discovery(
@@ -261,6 +449,26 @@ async fn run_discovery(
             _ = shutdown.recv() => return,
             _ = tokio::time::sleep(Duration::from_secs(poll_seconds.max(5))) => {}
         }
+    }
+}
+
+fn map_web_buy_side(
+    session: &crate::state::SessionDescriptor,
+    side: WebTradeSide,
+) -> (TradeSide, String, String, &'static str) {
+    match side {
+        WebTradeSide::BuyUp => (
+            TradeSide::BuyUp,
+            session.up_token_id.clone(),
+            session.down_token_id.clone(),
+            "UP",
+        ),
+        WebTradeSide::BuyDown => (
+            TradeSide::BuyDown,
+            session.down_token_id.clone(),
+            session.up_token_id.clone(),
+            "DOWN",
+        ),
     }
 }
 
@@ -317,43 +525,41 @@ async fn handle_command(
                     session.slug
                 ));
             }
-            if now_ms() >= session.end_ms {
+            let command_now_ms = now_ms();
+            if command_now_ms >= session.end_ms {
                 return Err(anyhow!("session {} has ended", session.slug));
             }
             if !state.trading().enabled {
                 return Err(anyhow!("trading must be armed before submitting an order"));
             }
 
-            let (trade_side, token_id, complement_token_id, outcome_label) = match side {
-                WebTradeSide::BuyUp => (
-                    TradeSide::BuyUp,
-                    session.up_token_id.clone(),
-                    session.down_token_id.clone(),
-                    "UP",
-                ),
-                WebTradeSide::BuyDown => (
-                    TradeSide::BuyDown,
-                    session.down_token_id.clone(),
-                    session.up_token_id.clone(),
-                    "DOWN",
-                ),
-                WebTradeSide::SellUp => (
-                    TradeSide::SellUp,
-                    session.up_token_id.clone(),
-                    session.down_token_id.clone(),
-                    "UP",
-                ),
-                WebTradeSide::SellDown => (
-                    TradeSide::SellDown,
-                    session.down_token_id.clone(),
-                    session.up_token_id.clone(),
-                    "DOWN",
-                ),
-            };
+            let (trade_side, token_id, complement_token_id, outcome_label) =
+                map_web_buy_side(&session, side);
             let mechanism = match mechanism {
                 WebMechanism::Taker => TradingMechanism::FastTaker,
                 WebMechanism::Maker => TradingMechanism::FastMaker,
             };
+            if matches!(mechanism, TradingMechanism::FastMaker)
+                && session.end_ms - command_now_ms < MIN_MAKER_SESSION_REMAINING_MS
+            {
+                return Err(anyhow!(
+                    "Fast Maker is unavailable with less than {} seconds left; use Fast Taker or wait for the next session",
+                    MIN_MAKER_SESSION_REMAINING_MS / 1_000
+                ));
+            }
+            let minimum_nominal = state
+                .minimum_buy_nominal(trade_side, mechanism)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "live order constraints for {outcome_label} are unavailable; wait for a fresh order book"
+                    )
+                })?;
+            if nominal_usd + 1e-9 < minimum_nominal {
+                return Err(anyhow!(
+                    "{outcome_label} requires at least ${minimum_nominal:.2} for {} at the current book; choose a larger amount",
+                    mechanism.label()
+                ));
+            }
             state.trading_mut().set_nominal(nominal_usd);
             state.trading_mut().set_mechanism(mechanism);
             state.trading_mut().set_side(trade_side);
@@ -394,7 +600,7 @@ async fn handle_command(
                 local_id.clone(),
                 fingerprint,
                 session.slug,
-                now_ms(),
+                command_now_ms,
             );
             if let Err(error) = order_tx.try_send(intent) {
                 state.trading_mut().clear_in_flight_if(&local_id);
@@ -464,7 +670,70 @@ mod tests {
         assert!(
             NOMINAL_VALUES
                 .iter()
-                .all(|value| value.is_finite() && *value > 0.0)
+                .all(|value| value.is_finite() && *value >= crate::trading::MIN_BUY_ORDER_USD)
         );
+        assert_eq!(
+            NOMINAL_VALUES.first().copied(),
+            Some(crate::trading::MIN_BUY_ORDER_USD)
+        );
+        assert!(NOMINAL_VALUES.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn browser_buy_sides_map_to_the_correct_token_and_complement() {
+        let session = crate::state::SessionDescriptor {
+            slug: "btc-updown-5m-1".to_string(),
+            title: "BTC Up or Down".to_string(),
+            start_ms: 1_000,
+            end_ms: 301_000,
+            price_to_beat: Some(70_000.0),
+            up_token_id: "up-token".to_string(),
+            down_token_id: "down-token".to_string(),
+            active: true,
+            closed: false,
+            minimum_order_size: Some(5.0),
+            tick_size: Some(0.01),
+        };
+
+        assert_eq!(
+            map_web_buy_side(&session, WebTradeSide::BuyUp),
+            (
+                TradeSide::BuyUp,
+                "up-token".to_string(),
+                "down-token".to_string(),
+                "UP"
+            )
+        );
+        assert_eq!(
+            map_web_buy_side(&session, WebTradeSide::BuyDown),
+            (
+                TradeSide::BuyDown,
+                "down-token".to_string(),
+                "up-token".to_string(),
+                "DOWN"
+            )
+        );
+    }
+
+    #[test]
+    fn dashboard_identity_can_be_reused_without_exposing_its_access_token() {
+        let identity = DashboardIdentity::generate();
+        identity.validate().expect("generated dashboard identity");
+        let url = identity.access_url("127.0.0.1:9878");
+
+        assert!(url.contains("http://127.0.0.1:9878/?run="));
+        assert!(url.ends_with(identity.access_token()));
+        let debug = format!("{identity:?}");
+        assert!(!debug.contains(identity.access_token()));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn background_dashboard_identity_rejects_malformed_components() {
+        let invalid = DashboardIdentity {
+            run_id: "not-a-uuid".to_string(),
+            access_token: "short".to_string(),
+        };
+        assert!(invalid.validate().is_err());
     }
 }

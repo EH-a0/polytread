@@ -1,7 +1,8 @@
 use std::fs::{self, OpenOptions};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -10,20 +11,24 @@ use alloy::signers::Signer as _;
 use alloy::signers::local::PrivateKeySigner;
 use anyhow::{Context, Result, anyhow, bail};
 use directories::ProjectDirs;
-use indicatif::{ProgressBar, ProgressStyle};
 use keyring::Entry;
 use polymarket_client_sdk_v2::{POLYGON, derive_proxy_wallet, derive_safe_wallet};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
-use crate::app;
+use crate::app::{self, DashboardIdentity, RunOutcome};
 use crate::config::{
     DEFAULT_POLYGON_RPC_URL, GAMMA_API_URL, RELAYER_API_URL, ServeArgs, TradingArgs,
 };
 use crate::connectivity;
 use crate::dns_remediation;
+use crate::local_control;
+use crate::runtime_ui::{RuntimeUi, is_cancelled as runtime_ui_was_cancelled};
+use crate::setup_ui::{
+    PrivateKeyAction, SetupProgress, SetupUi, is_cancelled as setup_was_cancelled,
+};
 use crate::trading::{TradingRuntimeConfig, validate_trading_config};
 
 const CONFIG_VERSION: u8 = 1;
@@ -31,6 +36,27 @@ const DEFAULT_BIND: &str = "127.0.0.1:9878";
 const VAULT_SERVICE: &str = "xyz.polytread.cli";
 const PRIVATE_KEY_VAULT_NAME: &str = "trading-private-key";
 const CONTROL_TOKEN_VAULT_NAME: &str = "local-control-token";
+const BACKGROUND_BOOTSTRAP_VERSION: u8 = 1;
+const MAX_BACKGROUND_BOOTSTRAP_BYTES: u64 = 4_096;
+const BACKGROUND_READY_ATTEMPTS: usize = 100;
+
+const STEP_DERIVE_SIGNER: usize = 0;
+const STEP_CONNECTIVITY: usize = 1;
+const STEP_FUNDING_WALLET: usize = 2;
+const STEP_WALLET_TYPE: usize = 3;
+const STEP_VALIDATE_CREDENTIALS: usize = 4;
+const STEP_BROWSER_TRADING: usize = 5;
+
+const RETURN_STEP_CONFIG: usize = 0;
+const RETURN_STEP_VAULT: usize = 1;
+const RETURN_STEP_CONNECTIVITY: usize = 2;
+const RETURN_STEP_CREDENTIALS: usize = 3;
+const RETURN_STEP_PERMISSIONS: usize = 4;
+const RETURN_STEP_DASHBOARD: usize = 5;
+
+const POST_SETUP_STEP_CONFIGURATION: usize = 0;
+const POST_SETUP_STEP_VAULT: usize = 1;
+const POST_SETUP_STEP_DASHBOARD: usize = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConsumerConfig {
@@ -49,6 +75,17 @@ struct ConsumerPaths {
     dns_backup_file: PathBuf,
 }
 
+struct CompletedSetup {
+    config: ConsumerConfig,
+    start_runtime: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct BackgroundBootstrap {
+    version: u8,
+    dashboard_identity: DashboardIdentity,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PublicProfile {
@@ -61,15 +98,388 @@ struct DeployedResponse {
 }
 
 pub async fn start() -> Result<()> {
-    let config = match read_config()? {
-        Some(config) => config,
-        None => setup(false).await?,
-    };
-    let args = serve_args(&config)?;
-    app::run(args).await
+    match read_config()? {
+        Some(config) if io::stdin().is_terminal() && io::stdout().is_terminal() => {
+            start_returning_user(config).await
+        }
+        Some(config) => app::run(serve_args(&config)?).await,
+        None => {
+            let completed = setup(false).await?;
+            if completed.start_runtime {
+                start_after_setup(completed.config).await
+            } else {
+                Ok(())
+            }
+        }
+    }
 }
 
-pub async fn setup(force: bool) -> Result<ConsumerConfig> {
+pub async fn setup_and_start(force: bool) -> Result<()> {
+    let completed = setup(force).await?;
+    if completed.start_runtime {
+        start_after_setup(completed.config).await
+    } else {
+        Ok(())
+    }
+}
+
+async fn start_returning_user(config: ConsumerConfig) -> Result<()> {
+    let mut ui = RuntimeUi::enter([
+        "Load saved configuration",
+        "Open credential vault",
+        "Verify Polymarket connectivity",
+        "Authenticate and check funds",
+        "Reuse saved permissions",
+        "Start local dashboard",
+    ])?;
+
+    let args = match Box::pin(run_returning_checks(&mut ui, config)).await {
+        Ok(args) => args,
+        Err(error) if runtime_ui_was_cancelled(&error) => return Err(error),
+        Err(error) => {
+            ui.fail_active("Startup check failed — no permissions or settings were changed");
+            let error_text = format!("{error:#}");
+            let _ = ui.show_failure(&error_text);
+            return Err(error);
+        }
+    };
+
+    run_runtime_with_ui(args, ui).await
+}
+
+async fn start_after_setup(config: ConsumerConfig) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return app::run(serve_args(&config)?).await;
+    }
+
+    let mut ui = RuntimeUi::enter([
+        "Use completed setup",
+        "Open credential vault",
+        "Start local dashboard",
+    ])?;
+    ui.complete(
+        POST_SETUP_STEP_CONFIGURATION,
+        "Configuration, wallet checks, and permissions are ready",
+    );
+    ui.running(
+        POST_SETUP_STEP_VAULT,
+        "Loading the credentials saved during setup...",
+    );
+    let config_for_vault = config.clone();
+    let args_result = ui
+        .animate_while(Box::pin(async move {
+            tokio::task::spawn_blocking(move || serve_args(&config_for_vault))
+                .await
+                .context("post-setup credential-vault task failed")?
+        }))
+        .await
+        .and_then(|result| result);
+    let args = match args_result {
+        Ok(args) => args,
+        Err(error) => {
+            ui.fail_active("The saved credentials could not be reopened");
+            let error_text = format!("{error:#}");
+            let _ = ui.show_failure(&error_text);
+            return Err(error);
+        }
+    };
+    ui.complete(
+        POST_SETUP_STEP_VAULT,
+        "New credentials loaded from the operating-system vault",
+    );
+    ui.running(
+        POST_SETUP_STEP_DASHBOARD,
+        "Opening the configured loopback listener...",
+    );
+    run_runtime_with_ui(args, ui).await
+}
+
+async fn run_runtime_with_ui(args: ServeArgs, mut ui: RuntimeUi) -> Result<()> {
+    ui.animate_briefly(Duration::from_millis(160)).await?;
+    let bind = args.bind.clone();
+    match app::run_with_ui(args, &mut ui).await {
+        Ok(RunOutcome::Stopped) => Ok(()),
+        Ok(RunOutcome::Detach {
+            identity,
+            dashboard_url,
+        }) => {
+            drop(ui);
+            handoff_to_background(identity, &bind).await?;
+            println!("PolyTread is running in the background.");
+            println!("Dashboard: {dashboard_url}");
+            println!("Stop the service with: polytread shutdown");
+            Ok(())
+        }
+        Err(error) => {
+            ui.fail_active("PolyTread stopped before the runtime became healthy");
+            let error_text = format!("{error:#}");
+            let _ = ui.show_failure(&error_text);
+            Err(error)
+        }
+    }
+}
+
+pub async fn background_worker() -> Result<()> {
+    if io::stdin().is_terminal() {
+        bail!("the internal background worker can only be started by PolyTread");
+    }
+    let bootstrap = read_background_bootstrap()?;
+    if bootstrap.version != BACKGROUND_BOOTSTRAP_VERSION {
+        bail!(
+            "unsupported background bootstrap version {}",
+            bootstrap.version
+        );
+    }
+    bootstrap.dashboard_identity.validate()?;
+    let config = read_config()?.ok_or_else(|| anyhow!("PolyTread has not been set up yet"))?;
+    let args = serve_args(&config)?;
+    app::run_background(args, bootstrap.dashboard_identity).await
+}
+
+async fn handoff_to_background(identity: DashboardIdentity, bind: &str) -> Result<()> {
+    let mut child = spawn_background_worker(identity.clone())?;
+    let readiness = wait_for_background_worker(&mut child, bind, &identity).await;
+    if let Err(error) = readiness {
+        let child_id = child.id();
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error).with_context(|| {
+            format!("background worker {child_id} did not take over the local dashboard")
+        });
+    }
+    Ok(())
+}
+
+fn spawn_background_worker(identity: DashboardIdentity) -> Result<Child> {
+    let executable = std::env::current_exe()
+        .context("failed locating the current PolyTread executable for background handoff")?;
+    let bootstrap = BackgroundBootstrap {
+        version: BACKGROUND_BOOTSTRAP_VERSION,
+        dashboard_identity: identity,
+    };
+    let payload = Zeroizing::new(
+        serde_json::to_vec(&bootstrap).context("failed preparing the background handoff")?,
+    );
+    let mut command = ProcessCommand::new(executable);
+    command
+        .arg("__background-worker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+
+        command.process_group(0);
+    }
+
+    let mut child = command
+        .spawn()
+        .context("failed starting the PolyTread background worker")?;
+    let write_result = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("background worker stdin was unavailable"))
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(payload.as_slice())
+                .context("failed sending the private background bootstrap")?;
+            stdin
+                .flush()
+                .context("failed flushing the private background bootstrap")
+        });
+    if let Err(error) = write_result {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
+    Ok(child)
+}
+
+fn read_background_bootstrap() -> Result<BackgroundBootstrap> {
+    let mut payload = Vec::new();
+    io::stdin()
+        .take(MAX_BACKGROUND_BOOTSTRAP_BYTES + 1)
+        .read_to_end(&mut payload)
+        .context("failed reading the private background bootstrap")?;
+    if payload.len() as u64 > MAX_BACKGROUND_BOOTSTRAP_BYTES {
+        payload.zeroize();
+        bail!("background bootstrap exceeded its size limit");
+    }
+    let payload = Zeroizing::new(payload);
+    serde_json::from_slice(payload.as_slice()).context("invalid background bootstrap")
+}
+
+async fn wait_for_background_worker(
+    child: &mut Child,
+    bind: &str,
+    identity: &DashboardIdentity,
+) -> Result<()> {
+    let client = Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .context("failed building the background readiness client")?;
+    let auth_url = format!("http://{bind}/_auth/session");
+    for _ in 0..BACKGROUND_READY_ATTEMPTS {
+        if let Some(status) = child
+            .try_wait()
+            .context("failed checking the PolyTread background worker")?
+        {
+            bail!("background worker exited early ({status})");
+        }
+        if let Ok(response) = client
+            .post(&auth_url)
+            .bearer_auth(identity.access_token())
+            .send()
+            .await
+            && response.status().is_success()
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!("background dashboard did not become ready within 10 seconds")
+}
+
+async fn run_returning_checks(ui: &mut RuntimeUi, config: ConsumerConfig) -> Result<ServeArgs> {
+    ui.running(
+        RETURN_STEP_CONFIG,
+        "Validating the saved local configuration...",
+    );
+    ui.animate_briefly(Duration::from_millis(180)).await?;
+    validate_config(&config)?;
+    ui.complete(
+        RETURN_STEP_CONFIG,
+        format!(
+            "{} wallet configuration loaded",
+            wallet_type_label(config.signature_type)
+        ),
+    );
+
+    ui.running(
+        RETURN_STEP_VAULT,
+        "Checking the operating-system credential vault...",
+    );
+    let config_for_vault = config.clone();
+    let args = ui
+        .animate_while(Box::pin(async move {
+            tokio::task::spawn_blocking(move || serve_args(&config_for_vault))
+                .await
+                .context("credential-vault check task failed")?
+        }))
+        .await??;
+    ui.complete(
+        RETURN_STEP_VAULT,
+        "Private key and local control token are available",
+    );
+
+    let client = setup_http_client()?;
+    ui.running(
+        RETURN_STEP_CONNECTIVITY,
+        "Checking real REST and WebSocket endpoints...",
+    );
+    let connectivity_status = ui
+        .animate_while(Box::pin(connectivity::probe(&client)))
+        .await?;
+    ui.seed_connectivity(connectivity_status.clone());
+    if !connectivity_status.is_usable_for_setup() {
+        bail!(
+            "returning launch stopped because {}: {}. No DNS or system change was requested",
+            connectivity_status.headline,
+            connectivity_status.detail
+        );
+    }
+    if connectivity_status.kind == connectivity::ConnectivityKind::Degraded {
+        ui.warning(
+            RETURN_STEP_CONNECTIVITY,
+            "Required REST endpoints work; live WebSocket monitors will keep retrying",
+        );
+    } else {
+        ui.complete(RETURN_STEP_CONNECTIVITY, connectivity_status.headline);
+    }
+
+    ui.running(
+        RETURN_STEP_CREDENTIALS,
+        "Authenticating and checking pUSD balance and allowances...",
+    );
+    let runtime = trading_runtime_from_serve_args(&args)?;
+    let validation = ui
+        .animate_while(Box::pin(validate_trading_config(&runtime)))
+        .await??;
+    if validation.available_pusd <= 0.0 {
+        ui.warning(
+            RETURN_STEP_CREDENTIALS,
+            format!(
+                "Credentials valid; no pUSD available • std ${:.4} • neg-risk ${:.4}",
+                validation.regular_allowance_pusd, validation.neg_risk_allowance_pusd
+            ),
+        );
+    } else {
+        ui.complete(
+            RETURN_STEP_CREDENTIALS,
+            format!(
+                "pUSD ${:.4} • std ${:.4} • neg-risk ${:.4}",
+                validation.available_pusd,
+                validation.regular_allowance_pusd,
+                validation.neg_risk_allowance_pusd
+            ),
+        );
+    }
+
+    ui.skipped(
+        RETURN_STEP_PERMISSIONS,
+        saved_permission_detail(config.allow_web_trading),
+    );
+    ui.animate_briefly(Duration::from_millis(160)).await?;
+    ui.running(
+        RETURN_STEP_DASHBOARD,
+        "Opening the configured loopback listener...",
+    );
+    Ok(args)
+}
+
+fn trading_runtime_from_serve_args(args: &ServeArgs) -> Result<TradingRuntimeConfig> {
+    Ok(TradingRuntimeConfig {
+        signer_address: args
+            .trading
+            .signer_address
+            .clone()
+            .ok_or_else(|| anyhow!("saved signer address is unavailable"))?,
+        funder_address: args
+            .trading
+            .funder_address
+            .clone()
+            .ok_or_else(|| anyhow!("saved funding wallet is unavailable"))?,
+        private_key: args
+            .trading
+            .private_key
+            .clone()
+            .ok_or_else(|| anyhow!("saved private key is unavailable"))?,
+        signature_type: args
+            .trading
+            .signature_type
+            .ok_or_else(|| anyhow!("saved wallet type is unavailable"))?,
+    })
+}
+
+fn saved_permission_detail(allow_web_trading: bool) -> &'static str {
+    if allow_web_trading {
+        "Previously enabled — prompt skipped; dashboard still starts disarmed"
+    } else {
+        "Saved view-only choice — prompt skipped"
+    }
+}
+
+async fn setup(force: bool) -> Result<CompletedSetup> {
     if let Some(existing) = read_config()?
         && !force
     {
@@ -79,7 +489,10 @@ pub async fn setup(force: bool) -> Result<ConsumerConfig> {
             wallet_type_label(existing.signature_type)
         );
         println!("Run `polytread setup --force` to replace the local setup.");
-        return Ok(existing);
+        return Ok(CompletedSetup {
+            config: existing,
+            start_runtime: false,
+        });
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!(
@@ -87,112 +500,189 @@ pub async fn setup(force: bool) -> Result<ConsumerConfig> {
         );
     }
 
-    println!("PolyTread secure setup");
-    println!("----------------------");
-    println!(
-        "Your trading private key is entered with hidden input and saved only in your operating-system credential vault."
-    );
-    println!(
-        "It is never written to the PolyTread config, dashboard, history files, or command line."
-    );
-    println!();
+    let mut ui = SetupUi::enter()?;
+    ui.select_setup()?;
 
-    let client = setup_connectivity_preflight().await?;
-
-    let mut private_key = rpassword::prompt_password("Trading private key (hidden): ")
-        .context("failed to read the hidden private key")?;
-    let normalized = private_key.trim().to_owned();
-    private_key.zeroize();
-    private_key = normalized;
-    if private_key.is_empty() {
-        bail!("the private key cannot be empty");
-    }
-
-    let signer = PrivateKeySigner::from_str(&private_key)
-        .context("the private key is not a valid Polygon signing key")?
-        .with_chain_id(Some(POLYGON));
-    let signer_address = signer.address();
-    println!("Derived signer: {signer_address}");
-
-    let spinner = progress_spinner("Discovering the Polymarket funding wallet...");
-    let discovered_funder = match fetch_profile_funder(&client, signer_address).await {
-        Ok(value) => value,
-        Err(error) => {
-            spinner.finish_with_message("Automatic profile lookup was unavailable.");
-            eprintln!("Profile lookup detail: {error}");
-            None
-        }
-    };
-    if !spinner.is_finished() {
-        spinner.finish_with_message("Polymarket profile lookup complete.");
-    }
-
-    let funder_address = match discovered_funder {
-        Some(address) => {
-            println!("Discovered funding wallet: {address}");
-            address
-        }
-        None => {
-            let entered = prompt_line(&format!(
-                "Funding wallet (press Enter if it is the signer {signer_address}): "
-            ))?;
-            if entered.trim().is_empty() {
-                signer_address
-            } else {
-                Address::from_str(entered.trim()).context("invalid funding wallet address")?
+    let mut key_error = None;
+    let (private_key, signer) = loop {
+        match ui.read_private_key(key_error.as_deref())? {
+            PrivateKeyAction::Back => {
+                key_error = None;
+                ui.select_setup()?;
+            }
+            PrivateKeyAction::Submitted(private_key) => {
+                match PrivateKeySigner::from_str(private_key.as_str()) {
+                    Ok(signer) => break (private_key, signer.with_chain_id(Some(POLYGON))),
+                    Err(_) => {
+                        key_error = Some(
+                            "That is not a valid Polygon private key. Check it and try again."
+                                .to_string(),
+                        );
+                    }
+                }
             }
         }
     };
 
-    let spinner = progress_spinner("Detecting the wallet type...");
-    let signature_type = match detect_wallet_type(&client, signer_address, funder_address).await {
-        Ok(value) => {
-            spinner.finish_with_message(format!("Detected {} wallet.", wallet_type_label(value)));
-            value
+    let mut progress = SetupProgress::new([
+        "Derived signer",
+        "Verify Polymarket connectivity",
+        "Discover funding wallet",
+        "Detect wallet type",
+        "Authenticate and check funds",
+        "Browser trading",
+    ]);
+    match Box::pin(run_setup_wizard(
+        &mut ui,
+        &mut progress,
+        private_key,
+        signer,
+    ))
+    .await
+    {
+        Ok((config, allow_web_trading)) => {
+            let start_runtime = ui.show_complete(&progress, allow_web_trading)?;
+            Ok(CompletedSetup {
+                config,
+                start_runtime,
+            })
         }
+        Err(error) if setup_was_cancelled(&error) => Err(error),
         Err(error) => {
-            spinner.finish_with_message("Automatic wallet-type detection was inconclusive.");
-            eprintln!("Detection detail: {error}");
-            prompt_wallet_type()?
+            progress.fail_active("Stopped safely — see the explanation below");
+            let error_text = format!("{error:#}");
+            let _ = ui.show_failure(&progress, &error_text);
+            Err(error)
+        }
+    }
+}
+
+async fn run_setup_wizard(
+    ui: &mut SetupUi,
+    progress: &mut SetupProgress,
+    private_key: Zeroizing<String>,
+    signer: PrivateKeySigner,
+) -> Result<(ConsumerConfig, bool)> {
+    progress.running(
+        STEP_DERIVE_SIGNER,
+        "Deriving the Polygon signing address...",
+    );
+    ui.animate_briefly(progress, Duration::from_millis(280))
+        .await?;
+    let signer_address = signer.address();
+    progress.complete(STEP_DERIVE_SIGNER, signer_address.to_string());
+
+    let client = Box::pin(setup_connectivity_preflight(ui, progress)).await?;
+
+    progress.running(
+        STEP_FUNDING_WALLET,
+        "Reading the public Polymarket profile...",
+    );
+    let discovered_funder = ui
+        .animate_while(
+            progress,
+            Box::pin(fetch_profile_funder(&client, signer_address)),
+        )
+        .await?;
+    let funder_address = match discovered_funder {
+        Ok(Some(address)) => address,
+        Ok(None) | Err(_) => {
+            progress.awaiting_input(
+                STEP_FUNDING_WALLET,
+                "Profile lookup was inconclusive — confirm the address",
+            );
+            let mut address_error = None;
+            loop {
+                let entered = ui.prompt_funding_wallet(
+                    progress,
+                    &signer_address.to_string(),
+                    address_error.as_deref(),
+                )?;
+                if entered.is_empty() {
+                    break signer_address;
+                }
+                match Address::from_str(&entered) {
+                    Ok(address) => break address,
+                    Err(_) => {
+                        address_error = Some(
+                            "Enter a valid 0x funding-wallet address, or clear it to use the signer."
+                                .to_string(),
+                        );
+                    }
+                }
+            }
         }
     };
+    progress.complete(STEP_FUNDING_WALLET, funder_address.to_string());
+
+    progress.running(STEP_WALLET_TYPE, "Matching supported wallet modes...");
+    let detected = ui
+        .animate_while(
+            progress,
+            Box::pin(detect_wallet_type(&client, signer_address, funder_address)),
+        )
+        .await?;
+    let (signature_type, manually_confirmed) = match detected {
+        Ok(value) => (value, false),
+        Err(_) => {
+            progress.awaiting_input(
+                STEP_WALLET_TYPE,
+                "Automatic detection was inconclusive — choose the wallet type",
+            );
+            (ui.prompt_wallet_type(progress)?, true)
+        }
+    };
+    progress.complete(
+        STEP_WALLET_TYPE,
+        if manually_confirmed {
+            format!("{} — confirmed manually", wallet_type_label(signature_type))
+        } else {
+            wallet_type_label(signature_type).to_string()
+        },
+    );
 
     let runtime = TradingRuntimeConfig {
         signer_address: signer_address.to_string(),
         funder_address: funder_address.to_string(),
-        private_key: private_key.clone(),
+        private_key: private_key.to_string(),
         signature_type,
     };
-    let spinner = progress_spinner("Authenticating and checking the pUSD wallet balance...");
-    let validation = match validate_trading_config(&runtime).await {
-        Ok(validation) => {
-            spinner.finish_with_message("Credentials authenticated and wallet balance checked.");
-            validation
-        }
-        Err(error) => {
-            spinner.finish_with_message("Credential validation failed.");
-            private_key.zeroize();
-            return Err(error).context(
-                "setup stopped before saving anything; verify the funding wallet and wallet type",
-            );
-        }
-    };
-    println!("Wallet type: {}", wallet_type_label(signature_type));
-    println!("Available pUSD: ${:.4}", validation.available_pusd);
-    println!(
-        "Trading allowance: ${:.4} standard / ${:.4} negative-risk",
-        validation.regular_allowance_pusd, validation.neg_risk_allowance_pusd
+    progress.running(
+        STEP_VALIDATE_CREDENTIALS,
+        "Authenticating and checking pUSD balance and allowances...",
+    );
+    let validation = ui
+        .animate_while(progress, Box::pin(validate_trading_config(&runtime)))
+        .await??;
+    let validation_detail = format!(
+        "pUSD ${:.4}  •  std ${:.4}  •  neg-risk ${:.4}",
+        validation.available_pusd,
+        validation.regular_allowance_pusd,
+        validation.neg_risk_allowance_pusd
     );
     if validation.available_pusd <= 0.0 {
-        println!(
-            "The credentials are valid, but the wallet currently has no available pUSD; buys will remain blocked until it is funded."
+        progress.warning(
+            STEP_VALIDATE_CREDENTIALS,
+            format!(
+                "Valid, no available pUSD  •  std ${:.4}  •  neg-risk ${:.4}",
+                validation.regular_allowance_pusd, validation.neg_risk_allowance_pusd
+            ),
         );
+    } else {
+        progress.complete(STEP_VALIDATE_CREDENTIALS, validation_detail);
     }
-    println!();
-    println!("Browser trading is safety-locked by default.");
-    let trading_confirmation =
-        prompt_line("Type ENABLE to allow manual browser orders, or press Enter for view-only: ")?;
-    let allow_web_trading = trading_confirmation.trim() == "ENABLE";
+
+    progress.awaiting_input(
+        STEP_BROWSER_TRADING,
+        "Choose Y to enable or N to stay view-only",
+    );
+    let allow_web_trading = ui.confirm_browser_trading(progress)?;
+    progress.running(
+        STEP_BROWSER_TRADING,
+        "Securing credentials and local settings...",
+    );
+    ui.animate_briefly(progress, Duration::from_millis(160))
+        .await?;
 
     let config = ConsumerConfig {
         version: CONFIG_VERSION,
@@ -203,31 +693,36 @@ pub async fn setup(force: bool) -> Result<ConsumerConfig> {
         allow_web_trading,
     };
     validate_config(&config)?;
-    let control_token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let control_token = Zeroizing::new(format!(
+        "{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    ));
     vault_entry(PRIVATE_KEY_VAULT_NAME)?
-        .set_password(&private_key)
+        .set_password(private_key.as_str())
         .context("the operating-system credential vault refused the private key")?;
-    private_key.zeroize();
     vault_entry(CONTROL_TOKEN_VAULT_NAME)?
-        .set_password(&control_token)
+        .set_password(control_token.as_str())
         .context("the operating-system credential vault refused the local control token")?;
     write_config(&config)?;
 
-    println!();
-    println!("Setup complete.");
-    println!(
-        "Dashboard trading: {}",
+    progress.complete(
+        STEP_BROWSER_TRADING,
         if allow_web_trading {
-            "enabled (still requires arming in the dashboard)"
+            "Enabled — dashboard still starts disarmed"
         } else {
-            "view-only"
-        }
+            "View-only"
+        },
     );
-    Ok(config)
+    Ok((config, allow_web_trading))
 }
 
 pub async fn shutdown() -> Result<()> {
     let config = read_config()?.ok_or_else(|| anyhow!("PolyTread has not been set up yet"))?;
+    if local_control::request_shutdown().await? {
+        report_shutdown_completion(&config.bind).await;
+        return Ok(());
+    }
     let token = read_vault_secret(CONTROL_TOKEN_VAULT_NAME)?;
     let response = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -243,8 +738,30 @@ pub async fn shutdown() -> Result<()> {
             response.status()
         );
     }
-    println!("Graceful shutdown requested.");
+    report_shutdown_completion(&config.bind).await;
     Ok(())
+}
+
+async fn report_shutdown_completion(bind: &str) {
+    let client = match Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            println!("Graceful shutdown requested.");
+            return;
+        }
+    };
+    let health_url = format!("http://{bind}/healthz");
+    for _ in 0..50 {
+        if client.get(&health_url).send().await.is_err() {
+            println!("PolyTread stopped safely.");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    println!("Graceful shutdown requested; PolyTread is finishing its cleanup.");
 }
 
 pub async fn status() -> Result<()> {
@@ -405,84 +922,126 @@ fn consumer_paths() -> Result<ConsumerPaths> {
     })
 }
 
-async fn setup_connectivity_preflight() -> Result<Client> {
+async fn setup_connectivity_preflight(
+    ui: &mut SetupUi,
+    progress: &mut SetupProgress,
+) -> Result<Client> {
     let mut client = setup_http_client()?;
-    let spinner = progress_spinner("Checking real Polymarket REST and WebSocket connectivity...");
-    let mut status = connectivity::probe(&client).await;
-    spinner.finish_with_message(status.headline.clone());
-    println!("{}", status.detail);
+    progress.running(
+        STEP_CONNECTIVITY,
+        "Checking real REST and WebSocket endpoints...",
+    );
+    let mut status = ui
+        .animate_while(progress, Box::pin(connectivity::probe(&client)))
+        .await?;
 
     if status.is_usable_for_setup() {
         if status.kind == connectivity::ConnectivityKind::Degraded {
-            println!(
-                "Setup can continue because the required REST endpoints work; the dashboard will keep checking the WebSocket path."
+            progress.warning(
+                STEP_CONNECTIVITY,
+                "Required REST endpoints work; WebSocket checks will continue in the dashboard",
             );
+        } else {
+            progress.complete(STEP_CONNECTIVITY, status.headline);
         }
         return Ok(client);
     }
 
     if !status.needs_dns_remediation() {
         bail!(
-            "setup stopped before requesting or saving credentials because the real Polymarket endpoints are not ready"
+            "setup stopped before saving credentials because {}: {}",
+            status.headline,
+            status.detail
         );
     }
 
-    println!();
-    println!(
-        "PolyTread can try {}.",
-        dns_remediation::remediation_label()
-    );
-    println!(
-        "This changes DNS resolution only; it does not change your public IP or determine whether trading is permitted in your location."
-    );
-    println!("A rollback record is kept locally for `polytread restore-dns`.");
-    let confirmation =
-        prompt_line("Type YES to request this DNS change, or press Enter to stop: ")?;
-    if confirmation.trim() != "YES" {
-        bail!("setup stopped before requesting or saving credentials; DNS was not changed");
+    progress.awaiting_input(STEP_CONNECTIVITY, status.headline.clone());
+    let dns_detail = status.detail.clone();
+    if !ui.confirm_dns_change(progress, dns_remediation::remediation_label(), &dns_detail)? {
+        bail!("setup stopped before saving credentials; DNS was not changed");
     }
 
     let backup_path = consumer_paths()?.dns_backup_file;
-    let spinner = progress_spinner("Requesting the operating-system DNS change...");
-    let outcome = match dns_remediation::apply(&backup_path).await {
+    progress.running(
+        STEP_CONNECTIVITY,
+        "Requesting the approved operating-system DNS change...",
+    );
+    let outcome = match ui
+        .animate_while_locked(progress, Box::pin(dns_remediation::apply(&backup_path)))
+        .await?
+    {
         Ok(outcome) => outcome,
         Err(error) => {
-            spinner.finish_with_message("The DNS change was not applied.");
-            return Err(error).context("setup stopped before requesting or saving credentials");
+            return Err(error).context("setup stopped before saving credentials");
         }
     };
-    spinner.finish_with_message("DNS change approved.");
     if let Some(step) = outcome.user_step {
-        println!("{step}");
-        let _ = prompt_line("Press Enter after the operating-system step is complete: ")?;
+        progress.awaiting_input(
+            STEP_CONNECTIVITY,
+            "Complete the operating-system step, then continue",
+        );
+        ui.wait_for_required_enter(progress, "OPERATING-SYSTEM STEP", &step)?;
     }
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    progress.running(
+        STEP_CONNECTIVITY,
+        "Waiting for the network change to become active...",
+    );
+    ui.animate_while_locked(
+        progress,
+        Box::pin(tokio::time::sleep(Duration::from_secs(1))),
+    )
+    .await?;
     client = setup_http_client()?;
-    let spinner = progress_spinner("Rechecking real Polymarket REST and WebSocket connectivity...");
-    status = connectivity::probe(&client).await;
-    spinner.finish_with_message(status.headline.clone());
-    println!("{}", status.detail);
+    progress.running(
+        STEP_CONNECTIVITY,
+        "Rechecking real REST and WebSocket endpoints...",
+    );
+    status = ui
+        .animate_while_locked(progress, Box::pin(connectivity::probe(&client)))
+        .await?;
     if status.is_usable_for_setup() {
-        println!("DNS remediation succeeded. Restore it later with `polytread restore-dns`.");
+        if status.kind == connectivity::ConnectivityKind::Degraded {
+            progress.warning(
+                STEP_CONNECTIVITY,
+                "DNS remediation restored REST access; WebSocket checks remain degraded",
+            );
+        } else {
+            progress.complete(
+                STEP_CONNECTIVITY,
+                "Endpoints reachable after approved DNS remediation",
+            );
+        }
         return Ok(client);
     }
 
-    eprintln!("The confirmed DNS change did not restore the required endpoints; restoring it now.");
-    match dns_remediation::restore(&backup_path).await {
+    progress.running(
+        STEP_CONNECTIVITY,
+        "Connectivity is still unavailable — restoring the original DNS settings...",
+    );
+    match ui
+        .animate_while_locked(progress, Box::pin(dns_remediation::restore(&backup_path)))
+        .await?
+    {
         Ok(outcome) => {
             if let Some(step) = outcome.user_step {
-                println!("{step}");
-                let _ = prompt_line("Press Enter after the operating-system step is complete: ")?;
+                progress.awaiting_input(
+                    STEP_CONNECTIVITY,
+                    "Complete the rollback step, then continue",
+                );
+                ui.wait_for_required_enter(progress, "RESTORE ORIGINAL DNS", &step)?;
                 dns_remediation::mark_restored_after_user_step(&backup_path)?;
             }
         }
-        Err(error) => eprintln!(
-            "Automatic DNS rollback failed: {error}. Run `polytread restore-dns` before trying setup again."
-        ),
+        Err(error) => {
+            bail!(
+                "connectivity remained unavailable and automatic DNS rollback failed: {error}; run `polytread restore-dns` before trying setup again"
+            )
+        }
     }
     bail!(
-        "setup stopped before requesting or saving credentials because Polymarket connectivity is still unavailable"
+        "setup stopped before saving credentials because Polymarket connectivity is still unavailable: {}",
+        status.detail
     )
 }
 
@@ -536,22 +1095,31 @@ async fn fetch_profile_funder(client: &Client, signer: Address) -> Result<Option
 }
 
 async fn detect_wallet_type(client: &Client, signer: Address, funder: Address) -> Result<u8> {
-    if signer == funder {
-        return Ok(0);
+    if let Some(signature_type) = deterministic_wallet_type(signer, funder) {
+        return Ok(signature_type);
     }
+    // The relayer's deployed endpoint confirms that bytecode exists at an address; it does not
+    // distinguish a Safe from a deposit wallet. Safe and proxy derivations must therefore be
+    // checked first. Only an otherwise-unmatched deployed profile wallet is a type-3 candidate,
+    // and the authenticated CLOB balance check later in setup remains the final validation.
     if relayer_reports_deployed(client, funder, "WALLET").await? {
         return Ok(3);
     }
-    if relayer_reports_deployed(client, funder, "SAFE").await? {
-        return Ok(2);
+
+    bail!("the funding wallet does not match a detectable EOA, proxy, Safe, or deposit wallet")
+}
+
+fn deterministic_wallet_type(signer: Address, funder: Address) -> Option<u8> {
+    if signer == funder {
+        return Some(0);
     }
     if derive_safe_wallet(signer, POLYGON).is_some_and(|candidate| candidate == funder) {
-        return Ok(2);
+        return Some(2);
     }
     if derive_proxy_wallet(signer, POLYGON).is_some_and(|candidate| candidate == funder) {
-        return Ok(1);
+        return Some(1);
     }
-    bail!("the funding wallet does not match a detectable EOA, proxy, Safe, or deposit wallet")
+    None
 }
 
 async fn relayer_reports_deployed(
@@ -580,20 +1148,6 @@ async fn relayer_reports_deployed(
     Ok(deployed.deployed)
 }
 
-fn prompt_wallet_type() -> Result<u8> {
-    println!("Select the wallet type shown by your Polymarket account:");
-    println!("  1 = legacy Polymarket proxy");
-    println!("  2 = Gnosis Safe");
-    println!("  3 = deposit wallet (POLY_1271)");
-    let value = prompt_line("Wallet type [1/2/3]: ")?;
-    match value.trim() {
-        "1" => Ok(1),
-        "2" => Ok(2),
-        "3" => Ok(3),
-        _ => bail!("wallet type must be 1, 2, or 3"),
-    }
-}
-
 fn wallet_type_label(value: u8) -> &'static str {
     match value {
         0 => "EOA",
@@ -612,21 +1166,21 @@ fn prompt_line(prompt: &str) -> Result<String> {
     Ok(value.trim_end_matches(['\r', '\n']).to_string())
 }
 
-fn progress_spinner(message: impl Into<String>) -> ProgressBar {
-    let spinner = ProgressBar::new_spinner();
-    spinner.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} {msg}")
-            .expect("static spinner template is valid")
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-    );
-    spinner.set_message(message.into());
-    spinner.enable_steady_tick(Duration::from_millis(90));
-    spinner
-}
-
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of_val;
+
     use super::*;
+
+    #[test]
+    fn first_run_setup_future_keeps_network_state_off_the_main_stack() {
+        let future = setup(false);
+        let future_size = size_of_val(&future);
+        assert!(
+            future_size <= 64 * 1024,
+            "setup future grew to {future_size} bytes; box large async operations before awaiting"
+        );
+    }
 
     #[test]
     fn consumer_config_rejects_non_loopback_listener() {
@@ -647,6 +1201,40 @@ mod tests {
         assert_eq!(wallet_type_label(1), "legacy proxy");
         assert_eq!(wallet_type_label(2), "Gnosis Safe");
         assert_eq!(wallet_type_label(3), "deposit wallet");
+    }
+
+    #[test]
+    fn returning_launch_reuses_the_saved_permission_without_prompting() {
+        assert_eq!(
+            saved_permission_detail(true),
+            "Previously enabled — prompt skipped; dashboard still starts disarmed"
+        );
+        assert_eq!(
+            saved_permission_detail(false),
+            "Saved view-only choice — prompt skipped"
+        );
+    }
+
+    #[test]
+    fn eoa_wallet_type_uses_the_signer_address() {
+        let signer = Address::from([0x11; 20]);
+        assert_eq!(deterministic_wallet_type(signer, signer), Some(0));
+    }
+
+    #[test]
+    fn deterministic_safe_is_not_misclassified_as_a_deposit_wallet() {
+        let signer = Address::from([0x22; 20]);
+        let safe =
+            derive_safe_wallet(signer, POLYGON).expect("Polygon Safe derivation is supported");
+        assert_eq!(deterministic_wallet_type(signer, safe), Some(2));
+    }
+
+    #[test]
+    fn deterministic_proxy_uses_the_legacy_proxy_signature_type() {
+        let signer = Address::from([0x33; 20]);
+        let proxy =
+            derive_proxy_wallet(signer, POLYGON).expect("Polygon proxy derivation is supported");
+        assert_eq!(deterministic_wallet_type(signer, proxy), Some(1));
     }
 
     #[test]

@@ -23,6 +23,8 @@ use crate::trading::TradingRuntimeConfig;
 
 const PORTFOLIO_POLL_SECONDS: u64 = 20;
 const PORTFOLIO_PERSIST_SECONDS: i64 = 60;
+const PORTFOLIO_SNAPSHOT_SCHEMA_VERSION: u8 = 1;
+const MIN_OPEN_POSITION_SIZE: f64 = 0.01;
 const MAX_PORTFOLIO_ROWS: usize = 500;
 const MAX_POSITION_PAGES: usize = 4;
 const MAX_CLOSED_PAGES: usize = 10;
@@ -173,6 +175,8 @@ struct PortfolioRefresh {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct PortfolioSnapshotRecord {
+    #[serde(default)]
+    schema_version: u8,
     current_open_pnl_usd: f64,
     today_realized_pnl_usd: f64,
     current_value_usd: f64,
@@ -183,6 +187,7 @@ struct PortfolioSnapshotRecord {
 impl From<&PortfolioState> for PortfolioSnapshotRecord {
     fn from(state: &PortfolioState) -> Self {
         Self {
+            schema_version: PORTFOLIO_SNAPSHOT_SCHEMA_VERSION,
             current_open_pnl_usd: state.current_open_pnl_usd,
             today_realized_pnl_usd: state.today_realized_pnl_usd,
             current_value_usd: state.current_value_usd,
@@ -210,7 +215,9 @@ impl PortfolioStore {
         })?;
         let path = data_dir.join("portfolio.ndjson");
         let claims_path = data_dir.join("claims.ndjson");
-        let last = load_last_valid::<PortfolioSnapshotRecord>(&path).await?;
+        let last = load_last_valid::<PortfolioSnapshotRecord>(&path)
+            .await?
+            .filter(|snapshot| snapshot.schema_version == PORTFOLIO_SNAPSHOT_SCHEMA_VERSION);
         let claims = load_recent_valid::<ClaimRecord>(&claims_path, MAX_CLAIM_HISTORY).await?;
         let last_persisted_at_ms = last.as_ref().and_then(|state| state.updated_at_ms);
         Ok((
@@ -421,17 +428,37 @@ async fn fetch_portfolio(client: &Client, funder_address: &str) -> Result<Portfo
         .timestamp();
     let closed = fetch_today_closed_positions(client, funder_address, today_start_seconds).await?;
 
-    let current_open_pnl_usd = finite_sum(positions.iter().map(|position| position.cash_pnl));
-    let current_value_usd = finite_sum(positions.iter().map(|position| position.current_value));
+    Ok(portfolio_refresh_from_rows(&positions, &closed))
+}
+
+fn portfolio_refresh_from_rows(
+    positions: &[PositionResponse],
+    closed: &[ClosedPositionResponse],
+) -> PortfolioRefresh {
+    let active_positions = positions
+        .iter()
+        .filter(|position| {
+            !position.redeemable
+                && position.size.is_finite()
+                && position.size > MIN_OPEN_POSITION_SIZE
+        })
+        .collect::<Vec<_>>();
+    let current_open_pnl_usd =
+        finite_sum(active_positions.iter().map(|position| position.cash_pnl));
+    let current_value_usd = finite_sum(
+        active_positions
+            .iter()
+            .map(|position| position.current_value),
+    );
     let today_realized_pnl_usd = finite_sum(closed.iter().map(|position| position.realized_pnl));
-    let claimable_positions = aggregate_claimable_positions(&positions);
-    Ok(PortfolioRefresh {
+    let claimable_positions = aggregate_claimable_positions(positions);
+    PortfolioRefresh {
         current_open_pnl_usd,
         today_realized_pnl_usd,
         current_value_usd,
-        open_positions: positions.len(),
+        open_positions: active_positions.len(),
         claimable_positions,
-    })
+    }
 }
 
 async fn fetch_positions(client: &Client, funder_address: &str) -> Result<Vec<PositionResponse>> {
@@ -507,7 +534,13 @@ async fn fetch_today_closed_positions(
 
 fn aggregate_claimable_positions(positions: &[PositionResponse]) -> Vec<ClaimablePosition> {
     let mut grouped = BTreeMap::<String, ClaimablePosition>::new();
-    for position in positions.iter().filter(|position| position.redeemable) {
+    for position in positions.iter().filter(|position| {
+        position.redeemable
+            && position.size.is_finite()
+            && position.size > 0.0
+            && position.current_value.is_finite()
+            && position.current_value > 0.0
+    }) {
         let entry = grouped
             .entry(position.condition_id.to_ascii_lowercase())
             .or_insert_with(|| ClaimablePosition {
@@ -545,7 +578,8 @@ fn aggregate_claimable_positions(positions: &[PositionResponse]) -> Vec<Claimabl
 }
 
 fn finite_sum(values: impl Iterator<Item = f64>) -> f64 {
-    values.filter(|value| value.is_finite()).sum()
+    let total = values.filter(|value| value.is_finite()).sum::<f64>();
+    if total.abs() < 1e-9 { 0.0 } else { total }
 }
 
 fn normalize_timestamp_seconds(value: i64) -> i64 {
@@ -728,13 +762,20 @@ mod tests {
 
     use super::*;
 
-    fn position(condition_id: &str, outcome: &str, value: f64, pnl: f64) -> PositionResponse {
+    fn position(
+        condition_id: &str,
+        outcome: &str,
+        size: f64,
+        current_value: f64,
+        pnl: f64,
+        redeemable: bool,
+    ) -> PositionResponse {
         PositionResponse {
             condition_id: condition_id.to_string(),
-            size: value,
-            current_value: value,
+            size,
+            current_value,
             cash_pnl: pnl,
-            redeemable: true,
+            redeemable,
             title: "Resolved market".to_string(),
             slug: "resolved-market".to_string(),
             outcome: outcome.to_string(),
@@ -745,13 +786,45 @@ mod tests {
     #[test]
     fn claimable_rows_group_by_condition_without_losing_value() {
         let rows = aggregate_claimable_positions(&[
-            position("0xabc", "Yes", 2.0, 1.0),
-            position("0xABC", "No", 3.0, -1.0),
+            position("0xabc", "Yes", 2.0, 2.0, 1.0, true),
+            position("0xABC", "No", 3.0, 3.0, -1.0, true),
         ]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].redeemable_value_usd, 5.0);
         assert_eq!(rows[0].cash_pnl_usd, 0.0);
         assert_eq!(rows[0].outcomes, "Yes + No");
+    }
+
+    #[test]
+    fn resolved_zero_value_rows_are_not_active_or_claimable() {
+        let refresh =
+            portfolio_refresh_from_rows(&[position("0xabc", "No", 8.0, 0.0, -2.0, true)], &[]);
+        assert_eq!(refresh.open_positions, 0);
+        assert_eq!(refresh.current_value_usd, 0.0);
+        assert_eq!(refresh.current_open_pnl_usd, 0.0);
+        assert!(refresh.claimable_positions.is_empty());
+    }
+
+    #[test]
+    fn only_active_rows_drive_open_value_and_pnl() {
+        let refresh = portfolio_refresh_from_rows(
+            &[
+                position("0xactive", "Yes", 3.0, 1.5, 0.5, false),
+                position("0xresolved", "Yes", 2.0, 2.0, 1.0, true),
+            ],
+            &[],
+        );
+        assert_eq!(refresh.open_positions, 1);
+        assert_eq!(refresh.current_value_usd, 1.5);
+        assert_eq!(refresh.current_open_pnl_usd, 0.5);
+        assert_eq!(refresh.claimable_positions.len(), 1);
+        assert_eq!(refresh.claimable_positions[0].condition_id, "0xresolved");
+    }
+
+    #[test]
+    fn displayed_totals_normalize_negative_zero() {
+        assert_eq!(finite_sum([-0.0].into_iter()), 0.0);
+        assert!(!finite_sum([-0.0].into_iter()).is_sign_negative());
     }
 
     #[test]
@@ -779,6 +852,21 @@ mod tests {
             .await
             .expect("reopen");
         assert_eq!(loaded.expect("snapshot").current_open_pnl_usd, 12.5);
+    }
+
+    #[tokio::test]
+    async fn portfolio_store_ignores_an_earlier_calculation_schema() {
+        let directory = tempdir().expect("tempdir");
+        tokio::fs::write(
+            directory.path().join("portfolio.ndjson"),
+            b"{\"current_open_pnl_usd\":-62.0,\"today_realized_pnl_usd\":0.0,\"current_value_usd\":0.0,\"open_positions\":8,\"updated_at_ms\":2000}\n",
+        )
+        .await
+        .expect("write legacy snapshot");
+        let (_, loaded, _) = PortfolioStore::open(directory.path().to_path_buf())
+            .await
+            .expect("open");
+        assert!(loaded.is_none());
     }
 
     #[tokio::test]

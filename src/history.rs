@@ -143,6 +143,8 @@ mod tests {
             down_token_id: "down".to_string(),
             active: true,
             closed: false,
+            minimum_order_size: None,
+            tick_size: None,
         }
     }
 

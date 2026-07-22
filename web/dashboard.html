@@ -1,198 +1,899 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>PolyTread</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #091018;
-      --panel: #111b27;
-      --panel2: #162332;
-      --line: #26384b;
-      --text: #e9f1f9;
-      --muted: #8ca0b5;
-      --green: #39d98a;
-      --red: #ff647c;
-      --blue: #62a8ff;
-      --amber: #f4bb55;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: radial-gradient(circle at top, #142439 0, var(--bg) 42rem);
-      color: var(--text);
-      font: 14px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
-    }
-    button, input, a { font: inherit; }
-    button { cursor: pointer; }
-    button:disabled { cursor: not-allowed; opacity: .42; }
-    .shell { width: min(1180px, calc(100% - 28px)); margin: 0 auto; padding: 20px 0 42px; }
-    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
-    .brand { font-size: 21px; font-weight: 800; letter-spacing: -.03em; }
-    .brand span { color: var(--blue); }
-    .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
-    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); box-shadow: 0 0 12px currentColor; }
-    .dot.live { background: var(--green); }
-    .network-banner { display: grid; gap: 4px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 11px; background: #101c29; }
-    .network-banner[hidden] { display: none; }
-    .network-banner strong { font-size: 13px; }
-    .network-banner span { color: var(--muted); font-size: 12px; line-height: 1.45; }
-    .network-banner.warning { border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); }
-    .network-banner.error { border-color: color-mix(in srgb, var(--red) 60%, var(--line)); background: #21141a; }
-    .grid { display: grid; gap: 14px; }
-    .prices { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-    .two { grid-template-columns: minmax(0, 1.55fr) minmax(300px, .85fr); margin-top: 14px; }
-    .panel { background: color-mix(in srgb, var(--panel) 94%, transparent); border: 1px solid var(--line); border-radius: 14px; padding: 15px; box-shadow: 0 18px 45px rgba(0,0,0,.18); }
-    .kicker { color: var(--muted); text-transform: uppercase; font-size: 10px; font-weight: 800; letter-spacing: .11em; }
-    .value { margin-top: 7px; font: 750 24px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace; }
-    .value.up { color: var(--green); }
-    .value.down { color: var(--red); }
-    .value.positive { color: var(--green); }
-    .value.negative { color: var(--red); }
-    .session { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 14px; }
-    .session h1 { margin: 4px 0 2px; font-size: 20px; }
-    .session p { margin: 0; color: var(--muted); }
-    .countdown { text-align: right; font: 750 22px ui-monospace, SFMono-Regular, Consolas, monospace; }
-    canvas { width: 100%; height: 210px; display: block; border-radius: 10px; background: #0b141e; margin-top: 10px; }
-    .legend { display: flex; gap: 16px; color: var(--muted); font-size: 11px; margin-top: 9px; }
-    .legend i { display: inline-block; width: 10px; height: 3px; margin-right: 5px; vertical-align: middle; }
-    .trade-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .arm { border: 1px solid var(--line); border-radius: 999px; background: var(--panel2); color: var(--text); padding: 8px 12px; }
-    .arm.on { color: var(--green); border-color: color-mix(in srgb, var(--green) 50%, var(--line)); }
-    .notice { margin: 12px 0; padding: 10px 11px; border-radius: 9px; background: #0b141e; color: var(--muted); font-size: 12px; min-height: 42px; }
-    .options { display: flex; flex-wrap: wrap; gap: 7px; margin: 9px 0 13px; }
-    .choice { border: 1px solid var(--line); background: var(--panel2); color: var(--muted); border-radius: 8px; padding: 7px 10px; }
-    .choice.active { border-color: var(--blue); color: var(--text); background: #173151; }
-    .orders { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .order { border: 0; border-radius: 9px; padding: 10px 8px; color: #07110c; font-weight: 800; background: var(--green); }
-    .order.sell { color: #1b070b; background: var(--red); }
-    .balances { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; margin-top: 12px; }
-    .table-panel { margin-top: 14px; overflow: hidden; }
-    .table-wrap { overflow-x: auto; margin-top: 10px; }
-    table { width: 100%; border-collapse: collapse; min-width: 680px; }
-    th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-    th { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
-    td { font-size: 12px; }
-    .empty { color: var(--muted); text-align: center; padding: 18px; }
-    .feeds { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
-    .feed { border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; color: var(--muted); font-size: 11px; }
-    .feed.live { color: var(--green); }
-    .claim-action { display: inline-block; border: 1px solid var(--blue); border-radius: 7px; background: #173151; color: var(--text); padding: 6px 9px; text-decoration: none; }
-    .claim-action.external { border-color: var(--line); background: var(--panel2); }
-    .claim-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
-    .hash { max-width: 180px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
-    .hash a { color: var(--blue); }
-    @media (max-width: 840px) {
-      .prices { grid-template-columns: 1fr 1fr 1fr; }
-      .two { grid-template-columns: 1fr; }
-    }
-    @media (max-width: 500px) {
-      .shell { width: min(100% - 18px, 1180px); }
-      .value { font-size: 19px; }
-      .orders { grid-template-columns: 1fr; }
-      .prices { grid-template-columns: 1fr 1fr; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PolyTread</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0a0a0a;
+    --bg-card: #111;
+    --bg-raised: #151515;
+    --bg-button: #1a1a1a;
+    --bg-button-hover: #252525;
+    --border: #242424;
+    --border-strong: #333;
+    --text: #e8e8e8;
+    --text-muted: #999;
+    --text-dim: #5d5d5d;
+    --green: #00ff88;
+    --green-bg: rgba(0, 255, 136, .11);
+    --red: #ff4d5f;
+    --red-bg: rgba(255, 77, 95, .11);
+    --orange: #ff9900;
+    --orange-bg: rgba(255, 153, 0, .11);
+    --blue: #4488ff;
+    --blue-bg: rgba(68, 136, 255, .12);
+    --yellow: #ffcc00;
+    --mono: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { width: 100%; min-height: 100%; }
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 14px;
+  }
+  button, a { font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: .36; }
+
+  .app {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(390px, 520px);
+    grid-template-rows: 68px minmax(0, 1fr) 36px;
+    width: 100vw;
+    height: 100vh;
+    gap: 1px;
+    background: var(--border);
+    transition: filter .18s ease, opacity .18s ease;
+  }
+  .app.locked { filter: blur(4px); opacity: .34; pointer-events: none; }
+
+  .header {
+    grid-column: 1 / -1;
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 10px 18px;
+    background: var(--bg-card);
+    position: relative;
+    z-index: 20;
+  }
+  .header-left, .header-right, .header-metrics, .header-actions {
+    display: flex;
+    align-items: center;
+  }
+  .header-left { gap: 14px; min-width: 0; }
+  .header-right { min-width: 0; gap: 12px; flex-shrink: 0; }
+  .header-metrics, .header-actions { min-width: 0; gap: 8px; }
+  .header-brand { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
+  .header-title { color: var(--orange); font-size: 18px; line-height: 1; font-weight: 800; }
+  .header-eyebrow, .metric-label, .panel-kicker, .field-label {
+    color: var(--text-dim);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .1em;
+  }
+  .header-divider { width: 1px; align-self: stretch; background: linear-gradient(transparent, #303030, transparent); }
+  .header-market-wrap { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .header-market { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+  .header-subtext { color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+  .metric-pill {
+    display: flex;
+    min-width: 104px;
+    min-height: 44px;
+    align-items: center;
+    padding: 7px 11px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: linear-gradient(180deg, rgba(255,255,255,.025), transparent);
+  }
+  .metric-stack { display: flex; flex-direction: column; gap: 3px; }
+  .metric-value { color: var(--text); font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .metric-value.positive { color: var(--green); }
+  .metric-value.negative { color: var(--red); }
+  .header-button {
+    min-height: 42px;
+    padding: 0 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    background: var(--bg-button);
+    color: var(--text);
+    font-weight: 700;
+  }
+  .header-button:hover { background: var(--bg-button-hover); }
+  .header-button.claim { color: var(--orange); border-color: rgba(255,153,0,.55); }
+  .status-badge {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 42px;
+    padding: 0 13px;
+    border: 1px solid rgba(255,77,95,.18);
+    border-radius: 9px;
+    background: var(--red-bg);
+    color: var(--red);
+    font-size: 12px;
+    font-weight: 800;
+  }
+  .status-badge.live { color: var(--green); border-color: rgba(0,255,136,.22); background: var(--green-bg); }
+  .status-badge.warning { color: var(--yellow); border-color: rgba(255,204,0,.26); background: rgba(255,204,0,.07); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; }
+
+  .chart-area {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+  }
+  .chart-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 46px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    color: var(--orange);
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+  }
+  .chart-controls { display: flex; align-items: center; gap: 6px; }
+  .chart-mode {
+    min-width: 62px;
+    padding: 6px 9px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-button);
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+  .chart-mode.active { color: var(--orange); border-color: rgba(255,153,0,.48); background: var(--orange-bg); }
+  .chart-container { position: relative; min-height: 0; flex: 1; padding: 14px 16px 16px; }
+  #price-chart { display: block; width: 100%; height: 100%; min-height: 300px; border: 1px solid #171717; border-radius: 8px; background: #0d0d0d; }
+  .chart-legend {
+    position: absolute;
+    top: 27px;
+    right: 30px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 10px;
+    border: 1px solid rgba(255,255,255,.05);
+    border-radius: 7px;
+    background: rgba(8,8,8,.84);
+    color: var(--text-muted);
+    font-size: 11px;
+    pointer-events: none;
+  }
+  .legend-line { display: inline-block; width: 18px; height: 3px; margin-right: 6px; border-radius: 2px; vertical-align: middle; }
+  .legend-line.bn { background: var(--orange); }
+  .legend-line.cl { background: var(--blue); }
+  .legend-line.target { height: 1px; background: var(--red); }
+
+  .sidebar {
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px;
+    background: #0d0d0d;
+  }
+  .panel {
+    margin-bottom: 10px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-card);
+  }
+  .panel:last-child { margin-bottom: 0; }
+  .panel-title { color: var(--orange); font-size: 13px; font-weight: 800; text-transform: uppercase; }
+  .session-name { margin-bottom: 13px; color: var(--text); font-size: 18px; font-weight: 750; line-height: 1.25; }
+  .session-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px 10px; }
+  .session-item { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  .session-value { overflow: hidden; color: var(--text); font-size: 14px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .session-value.countdown { color: var(--orange); font-size: 23px; }
+  .session-value.up { color: var(--green); }
+  .session-value.down { color: var(--red); }
+  .feed-strip { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+  .feed-chip { padding: 5px 8px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-dim); font-size: 10px; }
+  .feed-chip.live { color: var(--green); border-color: rgba(0,255,136,.24); background: var(--green-bg); }
+  .network-banner { margin-bottom: 10px; border-color: rgba(255,204,0,.28); background: rgba(255,204,0,.06); }
+  .network-banner.error { border-color: rgba(255,77,95,.32); background: var(--red-bg); }
+  .network-banner strong { display: block; margin-bottom: 5px; color: var(--yellow); font-size: 12px; }
+  .network-banner.error strong { color: var(--red); }
+  .network-banner span { color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+
+  .trading-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 11px; }
+  .trading-toggle { display: flex; align-items: center; gap: 9px; color: var(--text-muted); font-size: 11px; }
+  .toggle-switch { width: 38px; height: 21px; padding: 2px; border: 1px solid var(--border-strong); border-radius: 999px; background: #262626; }
+  .toggle-switch::after { content: ""; display: block; width: 15px; height: 15px; border-radius: 50%; background: #666; transition: transform .16s ease, background .16s ease; }
+  .toggle-switch.on { border-color: rgba(0,255,136,.45); background: var(--green-bg); }
+  .toggle-switch.on::after { transform: translateX(17px); background: var(--green); }
+  .notice { min-height: 42px; margin: 10px 0 12px; padding: 9px 10px; border: 1px solid rgba(68,136,255,.17); border-radius: 7px; background: var(--blue-bg); color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+  .notice.warning { border-color: rgba(255,153,0,.34); background: var(--orange-bg); color: #d4a55e; }
+  .notice.error { border-color: rgba(255,77,95,.42); background: var(--red-bg); color: #ff9eaa; }
+  .notice.error::before { content: "TRADING BLOCKED"; display: block; margin-bottom: 4px; color: var(--red); font-size: 9px; font-weight: 900; letter-spacing: .1em; }
+  .best-quotes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
+  .quote-box { padding: 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-raised); }
+  .quote-label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; }
+  .quote-value { margin-top: 5px; color: var(--text); font-size: 16px; font-weight: 750; }
+  .quote-value.up { color: var(--green); }
+  .quote-value.down { color: var(--red); }
+  .trade-price { margin: 3px 0 3px; color: var(--yellow); font-size: 25px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; }
+  .trade-price-target { min-height: 16px; margin: 0 0 12px; color: var(--text-dim); font-size: 10px; font-weight: 700; text-align: center; font-variant-numeric: tabular-nums; }
+  .trade-price-target.positive { color: var(--green); }
+  .trade-price-target.negative { color: var(--red); }
+  .trade-price-target.neutral { color: var(--yellow); }
+  .field-label { margin: 10px 0 7px; }
+  .button-row { display: grid; gap: 7px; }
+  .amount-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .type-row { grid-template-columns: 1fr 1fr; }
+  .side-row { grid-template-columns: 1fr 1fr; }
+  .choice-button, .side-button {
+    min-height: 43px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-button);
+    color: var(--text-muted);
+    font-weight: 700;
+  }
+  .choice-button:hover, .side-button:hover { background: var(--bg-button-hover); color: var(--text); }
+  .choice-button.active { color: var(--orange); border-color: rgba(255,153,0,.55); background: var(--orange-bg); }
+  .choice-button.mechanism.active { color: var(--blue); border-color: rgba(68,136,255,.62); background: var(--blue-bg); }
+  .side-button.buy.active { color: var(--green); border-color: rgba(0,255,136,.56); background: var(--green-bg); }
+  .execute-button {
+    width: 100%;
+    min-height: 50px;
+    margin-top: 9px;
+    border: 1px solid rgba(255,153,0,.6);
+    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(255,153,0,.22), rgba(255,153,0,.1));
+    color: var(--orange);
+    font-size: 14px;
+    font-weight: 900;
+  }
+  .execute-button.buy-ready { color: var(--green); border-color: rgba(0,255,136,.58); background: linear-gradient(180deg, rgba(0,255,136,.2), rgba(0,255,136,.08)); }
+  .portfolio-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--border); }
+  .portfolio-stat { min-width: 0; padding: 9px 10px; background: #101010; }
+  .portfolio-stat span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .portfolio-stat .label { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+  .portfolio-stat .value { margin-top: 5px; color: var(--text); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .portfolio-stat .value.positive { color: var(--green); }
+  .portfolio-stat .value.negative { color: var(--red); }
+
+  .orderbook-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+  .orderbook-head-right { display: flex; align-items: center; gap: 8px; }
+  .orderbook-state { color: var(--text-dim); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+  .orderbook-state.live { color: var(--green); }
+  .book-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: #0b0b0b; }
+  .book-switch button { min-width: 48px; min-height: 28px; border: 0; border-radius: 5px; background: transparent; color: var(--text-dim); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+  .book-switch button.active[data-book-outcome="up"] { color: var(--green); background: var(--green-bg); }
+  .book-switch button.active[data-book-outcome="down"] { color: var(--red); background: var(--red-bg); }
+  .book-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; overflow: hidden; margin-bottom: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--border); }
+  .book-metric { min-width: 0; padding: 8px 9px; background: #0e0e0e; text-align: center; }
+  .book-metric span { display: block; }
+  .book-metric .label { color: var(--text-dim); font-size: 8px; text-transform: uppercase; letter-spacing: .07em; }
+  .book-metric .value { margin-top: 4px; color: var(--text); font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .book-metric .value.bid { color: var(--green); }
+  .book-metric .value.ask { color: var(--red); }
+  .book-ladders { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+  .book-side { min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: #0b0b0b; }
+  .book-side-title { display: flex; align-items: center; justify-content: space-between; padding: 8px 9px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+  .book-side-title.bid { color: var(--green); }
+  .book-side-title.ask { color: var(--red); }
+  .book-columns, .book-row { display: grid; grid-template-columns: 1fr .9fr 1fr; gap: 6px; align-items: center; }
+  .book-columns { padding: 6px 8px; border-bottom: 1px solid #191919; color: var(--text-dim); font-size: 8px; text-transform: uppercase; }
+  .book-row { min-height: 26px; padding: 4px 8px; border-bottom: 1px solid #151515; color: var(--text-muted); font-size: 9px; font-variant-numeric: tabular-nums; }
+  .book-row:last-child { border-bottom: 0; }
+  .book-row span:nth-child(2), .book-row span:nth-child(3), .book-columns span:nth-child(2), .book-columns span:nth-child(3) { text-align: right; }
+  .book-row .price.bid { color: var(--green); }
+  .book-row .price.ask { color: var(--red); }
+  .book-empty { grid-column: 1 / -1; min-height: 116px; display: flex; align-items: center; justify-content: center; padding: 12px; color: var(--text-dim); font-size: 9px; text-align: center; }
+  .depth-balance { display: grid; grid-template-columns: auto minmax(70px, 1fr) auto; gap: 8px; align-items: center; margin-top: 9px; color: var(--text-dim); font-size: 9px; font-weight: 700; }
+  .depth-track { position: relative; height: 6px; overflow: hidden; border-radius: 999px; background: #252525; }
+  .depth-bid, .depth-ask { position: absolute; top: 0; bottom: 0; }
+  .depth-bid { left: 0; background: rgba(0,255,136,.72); }
+  .depth-ask { right: 0; background: rgba(255,77,95,.76); }
+  #depth-bid-label { color: var(--green); }
+  #depth-ask-label { color: var(--red); }
+  .book-rules { margin-top: 8px; color: var(--text-dim); font-size: 9px; text-align: center; }
+
+  .activity-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 9px; }
+  .text-button { border: 0; background: transparent; color: var(--blue); font-size: 11px; font-weight: 700; }
+  .trade-list { display: grid; gap: 6px; }
+  .trade-row { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; gap: 9px; align-items: center; padding: 8px 9px; border: 1px solid var(--border); border-radius: 7px; background: #0e0e0e; }
+  .trade-time, .trade-detail { color: var(--text-muted); font-size: 10px; }
+  .trade-main { min-width: 0; }
+  .trade-title { overflow: hidden; color: var(--text); font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .trade-detail { margin-top: 3px; }
+  .trade-status { max-width: 110px; overflow: hidden; color: var(--orange); font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .empty-state { padding: 15px 8px; color: var(--text-dim); font-size: 11px; text-align: center; }
+
+  .bottom-bar {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 18px;
+    background: var(--bg-card);
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+  .bottom-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 22px;
+    background: rgba(0,0,0,.76);
+    backdrop-filter: blur(7px);
+  }
+  .modal {
+    width: min(900px, 100%);
+    max-height: min(820px, calc(100vh - 44px));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    border-radius: 13px;
+    background: #0f0f0f;
+    box-shadow: 0 28px 90px rgba(0,0,0,.72);
+  }
+  .modal-header, .modal-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; background: var(--bg-card); }
+  .modal-header { border-bottom: 1px solid var(--border); }
+  .modal-footer { border-top: 1px solid var(--border); color: var(--text-muted); font-size: 11px; }
+  .modal-title { color: var(--text); font-size: 16px; font-weight: 800; }
+  .modal-subtitle { margin-top: 4px; color: var(--text-muted); font-size: 11px; }
+  .modal-close { width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-button); color: var(--text-muted); font-size: 20px; }
+  .modal-body { min-height: 160px; overflow: auto; padding: 14px 16px; }
+  .modal-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 12px; }
+  .modal-tab { padding: 7px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-button); color: var(--text-muted); }
+  .modal-tab.active { color: var(--orange); border-color: rgba(255,153,0,.5); background: var(--orange-bg); }
+  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+  table { width: 100%; min-width: 720px; border-collapse: collapse; }
+  th, td { padding: 10px 9px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+  th { color: var(--text-dim); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+  td { color: var(--text-muted); font-size: 11px; }
+  tr:last-child td { border-bottom: 0; }
+  .claim-status { margin-bottom: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-card); color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+  .claim-note { margin-bottom: 12px; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+  .claim-list { display: grid; gap: 8px; }
+  .claim-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-card); }
+  .claim-name { overflow: hidden; color: var(--text); font-weight: 750; text-overflow: ellipsis; white-space: nowrap; }
+  .claim-meta { margin-top: 6px; color: var(--text-muted); font-size: 10px; }
+  .claim-values { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; color: var(--text-muted); font-size: 10px; }
+  .claim-values strong { color: var(--text); }
+  .claim-action { display: inline-flex; align-items: center; justify-content: center; min-width: 112px; min-height: 38px; padding: 0 11px; border: 1px solid rgba(255,153,0,.5); border-radius: 7px; background: var(--orange-bg); color: var(--orange); font-weight: 800; text-decoration: none; }
+  .claim-action.external { color: var(--blue); border-color: rgba(68,136,255,.5); background: var(--blue-bg); }
+  .history-heading { margin: 16px 0 8px; color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+  .hash { display: inline-block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+  .hash a { color: var(--blue); }
+
+  .access-gate { z-index: 200; }
+  .access-card { width: min(560px, 100%); padding: 26px; border: 1px solid rgba(255,153,0,.38); border-radius: 14px; background: radial-gradient(circle at top right, rgba(255,153,0,.09), transparent 45%), #101010; box-shadow: 0 30px 100px rgba(0,0,0,.8); }
+  .access-brand { color: var(--orange); font-size: 20px; font-weight: 900; }
+  .access-card h1 { margin: 18px 0 8px; color: var(--text); font-size: 21px; }
+  .access-card p { margin: 0; color: var(--text-muted); line-height: 1.55; }
+  .access-command { margin-top: 16px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px; background: #090909; color: var(--text); font-size: 12px; }
+
+  ::-webkit-scrollbar { width: 7px; height: 7px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+
+  @media (max-width: 1320px) {
+    .metric-pill.clock { display: none; }
+    .app { grid-template-columns: minmax(0, 1fr) minmax(370px, 450px); }
+  }
+  @media (max-width: 1160px) {
+    body { overflow: auto; }
+    .app { width: 100%; height: auto; min-height: 100vh; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(520px, 62vh) auto 36px; }
+    .header { grid-column: 1; flex-wrap: wrap; }
+    .header-right { width: 100%; justify-content: space-between; }
+    .header-metrics { flex: 1; }
+    .metric-pill { flex: 1; }
+    .chart-area { min-height: 520px; }
+    .sidebar { overflow: visible; }
+    .bottom-bar { grid-column: 1; }
+  }
+  @media (max-width: 680px) {
+    .header { padding: 11px; }
+    .header-market-wrap, .header-divider { display: none; }
+    .header-right { align-items: stretch; flex-direction: column; }
+    .header-actions { width: 100%; }
+    .header-button { flex: 1; }
+    .status-badge { justify-content: center; }
+    .metric-pill { min-width: 0; padding: 7px; }
+    .metric-stack { min-width: 0; }
+    .metric-label { font-size: 8px; }
+    .metric-label, .metric-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .metric-value { font-size: 11px; }
+    .chart-header { align-items: flex-start; flex-direction: column; padding: 10px 12px; }
+    .chart-container { padding: 9px; }
+    .chart-legend { top: 20px; right: 19px; gap: 8px; }
+    .amount-row { grid-template-columns: repeat(3, 1fr); }
+    .book-ladders { grid-template-columns: 1fr; }
+    .session-grid { grid-template-columns: 1fr 1fr; }
+    .claim-row { grid-template-columns: 1fr; }
+    .claim-action { width: 100%; }
+    .bottom-bar span:nth-child(2) { display: none; }
+  }
+</style>
 </head>
 <body>
-<div class="shell">
-  <header>
-    <div class="brand">Poly<span>Tread</span></div>
-    <div class="status"><span id="connection-dot" class="dot"></span><span id="connection-label">Connecting</span></div>
+
+<div class="app locked" id="dashboard-app">
+  <header class="header">
+    <div class="header-left">
+      <div class="header-brand">
+        <span class="header-title">PolyTread</span>
+        <span class="header-eyebrow">Operator Dashboard</span>
+      </div>
+      <div class="header-divider"></div>
+      <div class="header-market-wrap">
+        <span class="header-market" id="header-market">BTC Up or Down · 5 minute</span>
+        <span class="header-subtext" id="header-session">Waiting for the current market</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="header-metrics">
+        <div class="metric-pill clock">
+          <div class="metric-stack"><span class="metric-label">UTC Clock</span><span class="metric-value" id="header-clock">--:--:--.---</span></div>
+        </div>
+        <div class="metric-pill">
+          <div class="metric-stack"><span class="metric-label">Open PnL</span><span class="metric-value" id="current-pnl">—</span></div>
+        </div>
+        <div class="metric-pill">
+          <div class="metric-stack"><span class="metric-label">Today Realized · UTC</span><span class="metric-value" id="daily-pnl">—</span></div>
+        </div>
+        <div class="metric-pill">
+          <div class="metric-stack"><span class="metric-label">Available pUSD</span><span class="metric-value" id="header-balance">—</span></div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button class="header-button" id="activity-open" type="button">Activity</button>
+        <button class="header-button claim" id="claims-open" type="button">Manual Claims</button>
+        <div class="status-badge" id="header-status"><span class="status-dot"></span><span id="status-text">ACCESS</span></div>
+      </div>
+    </div>
   </header>
 
-  <section id="network-banner" class="network-banner" role="status" hidden>
-    <strong id="network-headline"></strong>
-    <span id="network-detail"></span>
-  </section>
-
-  <section class="grid prices">
-    <div class="panel"><div class="kicker">Bitcoin · Chainlink</div><div class="value" id="chainlink-price">—</div></div>
-    <div class="panel"><div class="kicker">Bitcoin · Binance</div><div class="value" id="binance-price">—</div></div>
-    <div class="panel"><div class="kicker">UP token</div><div class="value up" id="up-price">—</div></div>
-    <div class="panel"><div class="kicker">DOWN token</div><div class="value down" id="down-price">—</div></div>
-    <div class="panel"><div class="kicker">Current open PnL</div><div class="value" id="current-pnl">—</div></div>
-    <div class="panel"><div class="kicker">Today realized · UTC</div><div class="value" id="daily-pnl">—</div></div>
-  </section>
-
-  <section class="grid two">
-    <div class="panel">
-      <div class="session">
-        <div><div class="kicker">Current BTC five-minute market</div><h1 id="session-title">Waiting for discovery</h1><p id="target-price">Price to beat —</p></div>
-        <div><div class="countdown" id="countdown">--:--</div><div class="kicker" id="session-slug"></div></div>
+  <main class="chart-area">
+    <div class="chart-header">
+      <span>One-second Price Chart</span>
+      <div class="chart-controls" aria-label="Chart feeds">
+        <button class="chart-mode" data-chart-mode="binance" type="button">1 · BN</button>
+        <button class="chart-mode" data-chart-mode="chainlink" type="button">2 · CL</button>
+        <button class="chart-mode active" data-chart-mode="both" type="button">3 · BOTH</button>
       </div>
-      <div class="kicker">One-second price history</div>
-      <canvas id="price-chart" width="900" height="260"></canvas>
-      <div class="legend"><span><i style="background:#62a8ff"></i>Chainlink</span><span><i style="background:#f4bb55"></i>Binance</span><span><i style="background:#39d98a"></i>UP</span><span><i style="background:#ff647c"></i>DOWN</span></div>
-      <div class="feeds" id="feeds"></div>
     </div>
-
-    <div class="panel">
-      <div class="trade-head"><div><div class="kicker">Operator-controlled trading</div><strong>Manual orders</strong></div><button id="arm" class="arm">Trading off</button></div>
-      <div id="trade-notice" class="notice">Waiting for the backend.</div>
-      <div class="kicker">Amount</div>
-      <div class="options" id="nominals"></div>
-      <div class="kicker">Execution</div>
-      <div class="options"><button class="choice active" data-mechanism="taker">Fast taker</button><button class="choice" data-mechanism="maker">Fast maker</button></div>
-      <div class="orders">
-        <button class="order" data-side="buy_up">Buy UP</button>
-        <button class="order sell" data-side="sell_up">Sell UP</button>
-        <button class="order" data-side="buy_down">Buy DOWN</button>
-        <button class="order sell" data-side="sell_down">Sell DOWN</button>
+    <div class="chart-container">
+      <canvas id="price-chart" aria-label="Binance and Chainlink BTC price history"></canvas>
+      <div class="chart-legend">
+        <span><i class="legend-line bn"></i>Binance</span>
+        <span><i class="legend-line cl"></i>Chainlink</span>
+        <span><i class="legend-line target"></i>Target</span>
       </div>
-      <div class="balances"><span id="balance">Balance —</span><span id="allowance">Allowance —</span></div>
     </div>
-  </section>
+  </main>
 
-  <section class="panel table-panel">
-    <div class="kicker">Past trades</div>
-    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Mode</th><th>Price</th><th>Shares</th><th>Status</th></tr></thead><tbody id="trades"></tbody></table></div>
-  </section>
+  <aside class="sidebar">
+    <section class="panel network-banner" id="network-banner" hidden>
+      <strong id="network-headline">Checking Polymarket connectivity</strong>
+      <span id="network-detail">Testing the required live endpoints.</span>
+    </section>
 
-  <section class="panel table-panel">
-    <div class="kicker">Manual claims only</div>
-    <div id="claim-status" class="notice">Waiting for portfolio data.</div>
-    <div class="claim-note" id="claim-note"></div>
-    <div class="table-wrap"><table><thead><tr><th>Market</th><th>Outcome</th><th>Shares</th><th>Redeemable</th><th>PnL</th><th>Action</th></tr></thead><tbody id="claims"></tbody></table></div>
-  </section>
+    <section class="panel">
+      <div class="session-name" id="session-name">Connecting…</div>
+      <div class="session-grid">
+        <div class="session-item"><span class="field-label">Time Left</span><span class="session-value countdown" id="countdown">--:--</span></div>
+        <div class="session-item"><span class="field-label">Price to Beat</span><span class="session-value" id="price-beat">—</span></div>
+        <div class="session-item"><span class="field-label">Status</span><span class="session-value" id="session-status">Loading</span></div>
+        <div class="session-item"><span class="field-label">Binance BTC</span><span class="session-value" id="binance-price">—</span></div>
+        <div class="session-item"><span class="field-label">Chainlink BTC</span><span class="session-value" id="chainlink-price">—</span></div>
+        <div class="session-item"><span class="field-label">Feeds</span><span class="session-value" id="feed-summary">Waiting</span></div>
+        <div class="session-item"><span class="field-label">UP Token</span><span class="session-value up" id="up-price">—</span></div>
+        <div class="session-item"><span class="field-label">DOWN Token</span><span class="session-value down" id="down-price">—</span></div>
+        <div class="session-item"><span class="field-label">Market Slug</span><span class="session-value" id="session-slug">—</span></div>
+      </div>
+      <div class="feed-strip" id="feeds"></div>
+    </section>
 
-  <section class="panel table-panel">
-    <div class="kicker">Claim history</div>
-    <div class="table-wrap"><table><thead><tr><th>Time</th><th>Market</th><th>Transaction</th></tr></thead><tbody id="claim-history"></tbody></table></div>
-  </section>
+    <section class="panel">
+      <div class="trading-head">
+        <div><div class="panel-title">Trading Panel</div><div class="panel-kicker">Manual orders only</div></div>
+        <div class="trading-toggle"><span id="trade-enabled-label">Trading off</span><button class="toggle-switch" id="arm" type="button" aria-label="Arm browser trading"></button></div>
+      </div>
+      <div class="notice" id="trade-notice">Waiting for the backend.</div>
+      <div class="best-quotes">
+        <div class="quote-box"><div class="quote-label">Best Ask · UP</div><div class="quote-value up" id="best-ask-up">—</div></div>
+        <div class="quote-box"><div class="quote-label">Best Ask · DOWN</div><div class="quote-value down" id="best-ask-down">—</div></div>
+      </div>
+      <div class="trade-price" id="trade-price">—</div>
+      <div class="trade-price-target" id="trade-price-target">CHAINLINK · Waiting for a live BTC price</div>
+      <div class="field-label">Trade Size</div>
+      <div class="button-row amount-row" id="nominals"></div>
+      <div class="field-label">Execution</div>
+      <div class="button-row type-row">
+        <button class="choice-button mechanism active" data-mechanism="taker" type="button">Fast Taker</button>
+        <button class="choice-button mechanism" data-mechanism="maker" type="button">Fast Maker</button>
+      </div>
+      <div class="field-label">Choose Outcome</div>
+      <div class="button-row side-row">
+        <button class="side-button buy" data-side="buy_up" type="button">▲ BUY UP</button>
+        <button class="side-button buy" data-side="buy_down" type="button">▼ BUY DOWN</button>
+      </div>
+      <button class="execute-button" id="execute-button" type="button" disabled>SELECT UP OR DOWN</button>
+      <div class="portfolio-grid">
+        <div class="portfolio-stat"><span class="label">Available pUSD</span><span class="value" id="pnl-balance">—</span></div>
+        <div class="portfolio-stat" title="Exchange approval for pUSD orders; this is not your wallet balance."><span class="label">pUSD Trading Approval</span><span class="value" id="pnl-allowance">—</span></div>
+        <div class="portfolio-stat"><span class="label">Active Position Value</span><span class="value" id="pnl-current-value">—</span></div>
+        <div class="portfolio-stat"><span class="label">Active Positions</span><span class="value" id="pnl-open-positions">0</span></div>
+        <div class="portfolio-stat"><span class="label">Active Position PnL</span><span class="value" id="pnl-current">—</span></div>
+        <div class="portfolio-stat"><span class="label">Today Realized PnL · UTC</span><span class="value" id="pnl-realized">—</span></div>
+      </div>
+    </section>
 
-  <section class="panel table-panel">
-    <div class="kicker">Past sessions</div>
-    <div class="table-wrap"><table><thead><tr><th>Start</th><th>Market</th><th>Price to beat</th><th>Window</th></tr></thead><tbody id="sessions"></tbody></table></div>
-  </section>
+    <section class="panel" aria-labelledby="orderbook-title">
+      <div class="orderbook-head">
+        <div><div class="panel-title" id="orderbook-title">Live Order Book</div><div class="panel-kicker">Polymarket CLOB · top 8 levels</div></div>
+        <div class="orderbook-head-right">
+          <span class="orderbook-state" id="orderbook-state">Waiting</span>
+          <div class="book-switch" aria-label="Order book outcome">
+            <button class="active" data-book-outcome="up" type="button">UP</button>
+            <button data-book-outcome="down" type="button">DOWN</button>
+          </div>
+        </div>
+      </div>
+      <div class="book-metrics">
+        <div class="book-metric"><span class="label">Best Bid</span><span class="value bid" id="book-best-bid">—</span></div>
+        <div class="book-metric"><span class="label">Spread</span><span class="value" id="book-spread">—</span></div>
+        <div class="book-metric"><span class="label">Best Ask</span><span class="value ask" id="book-best-ask">—</span></div>
+      </div>
+      <div class="book-ladders">
+        <div class="book-side">
+          <div class="book-side-title bid"><span>Bids</span><span>Buyers</span></div>
+          <div class="book-columns"><span>Price</span><span>Shares</span><span>Value</span></div>
+          <div id="book-bids"><div class="book-empty">Waiting for live bid depth.</div></div>
+        </div>
+        <div class="book-side">
+          <div class="book-side-title ask"><span>Asks</span><span>Sellers</span></div>
+          <div class="book-columns"><span>Price</span><span>Shares</span><span>Value</span></div>
+          <div id="book-asks"><div class="book-empty">Waiting for live ask depth.</div></div>
+        </div>
+      </div>
+      <div class="depth-balance" role="img" id="depth-balance" aria-label="Order book depth unavailable">
+        <span id="depth-bid-label">B —</span>
+        <span class="depth-track" aria-hidden="true"><span class="depth-bid" id="depth-bid-fill" style="width:50%"></span><span class="depth-ask" id="depth-ask-fill" style="width:50%"></span></span>
+        <span id="depth-ask-label">— A</span>
+      </div>
+      <div class="book-rules" id="book-rules">Waiting for market order rules.</div>
+    </section>
+
+    <section class="panel">
+      <div class="activity-head"><div class="panel-title">Recent Orders</div><button class="text-button" id="activity-open-inline" type="button">View all</button></div>
+      <div class="trade-list" id="trades"><div class="empty-state">No orders stored yet.</div></div>
+    </section>
+  </aside>
+
+  <footer class="bottom-bar">
+    <span id="bottom-time">—</span>
+    <span id="bottom-session">Waiting for market discovery</span>
+    <span>Localhost · 1 second history · manual execution</span>
+  </footer>
+</div>
+
+<div class="overlay access-gate" id="access-gate">
+  <div class="access-card">
+    <div class="access-brand">PolyTread</div>
+    <h1 id="access-title">Authenticating dashboard…</h1>
+    <p id="access-message">Establishing the private localhost session.</p>
+    <div class="access-command">Open the complete localhost link printed by <strong>polytread</strong>, including its <strong>#access=…</strong> fragment.</div>
+  </div>
+</div>
+
+<div class="overlay" id="claims-overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="claims-title">
+    <div class="modal-header">
+      <div><div class="modal-title" id="claims-title">Manual Claims</div><div class="modal-subtitle" id="claims-summary">0 positions · $0.00 claimable</div></div>
+      <button class="modal-close" id="claims-close" type="button" aria-label="Close manual claims">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="claim-status" id="claim-status">Waiting for portfolio data.</div>
+      <div class="claim-note" id="claim-note">Claims run only after an explicit manual action.</div>
+      <div class="claim-list" id="claims"><div class="empty-state">No claimable positions right now.</div></div>
+      <div class="history-heading">Local Claim History</div>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Market</th><th>Transaction</th></tr></thead><tbody id="claim-history"><tr><td colspan="3">No claims submitted by PolyTread.</td></tr></tbody></table></div>
+    </div>
+    <div class="modal-footer"><span>Manual claim mode</span><strong id="claims-total">$0.00</strong></div>
+  </div>
+</div>
+
+<div class="overlay" id="activity-overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="activity-title">
+    <div class="modal-header">
+      <div><div class="modal-title" id="activity-title">Local Activity</div><div class="modal-subtitle" id="activity-summary">Persistent trading and session history</div></div>
+      <button class="modal-close" id="activity-close" type="button" aria-label="Close activity">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-activity-mode="trades" type="button">Order History</button>
+        <button class="modal-tab" data-activity-mode="sessions" type="button">Past Sessions</button>
+        <button class="modal-tab" data-activity-mode="claims" type="button">Local Claim History</button>
+      </div>
+      <div id="activity-content"></div>
+    </div>
+    <div class="modal-footer"><span>Stored locally for the current OS user</span><strong id="activity-count">0 records</strong></div>
+  </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-const nominals = [.5, 1, 2, 3, 4, 5];
+const nominals = [1, 2, 3, 4, 5];
+const ORDERBOOK_STALE_MS = 30000;
 let snapshot = null;
 let selectedNominal = 1;
 let selectedMechanism = "taker";
+let selectedSide = null;
+let orderbookOutcome = "up";
+let marketFeedIsLive = false;
+let bookFreshness = {up: false, down: false};
+let chartMode = "both";
+let activityMode = "trades";
 let connected = false;
-let commandSocket = null;
 let dashboardAuthenticated = false;
+let commandSocket = null;
 let events = null;
+let lastSessionSlug = null;
+let balanceDataFresh = false;
 
 function money(value, decimals = 2) {
-  return Number.isFinite(value) ? `$${Number(value).toLocaleString(undefined, {minimumFractionDigits: decimals, maximumFractionDigits: decimals})}` : "—";
+  const normalized = Number.isFinite(value) && Math.abs(value) < .005 ? 0 : value;
+  return Number.isFinite(normalized)
+    ? `$${Number(normalized).toLocaleString(undefined, {minimumFractionDigits: decimals, maximumFractionDigits: decimals})}`
+    : "—";
 }
-function tokenPrice(value) { return Number.isFinite(value) ? Number(value).toFixed(3) : "—"; }
-function timeLabel(value) { return Number.isFinite(value) ? new Date(value).toLocaleString() : "—"; }
-function requestId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+function approval(value) {
+  if (!Number.isFinite(value)) return "—";
+  if (value + 1e-9 < nominals[0]) return "Not approved";
+  if (value >= 1_000_000_000) return "Approved";
+  return `${money(value)} limit`;
+}
+function tokenPrice(value) { return Number.isFinite(value) ? `$${Number(value).toFixed(3)}` : "—"; }
+function signedMoney(value) {
+  if (!Number.isFinite(value)) return "—";
+  const normalized = Math.abs(value) < .005 ? 0 : value;
+  const sign = normalized > 0 ? "+" : normalized < 0 ? "−" : "";
+  return `${sign}$${Math.abs(normalized).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+}
+function signedPercent(value) {
+  if (!Number.isFinite(value)) return "—";
+  const normalized = Math.abs(value) < .0005 ? 0 : value;
+  const sign = normalized > 0 ? "+" : normalized < 0 ? "−" : "";
+  return `${sign}${Math.abs(normalized).toFixed(3)}%`;
+}
+function renderChainlinkTargetComparison(data, chainlinkLive) {
+  const priceElement = $("trade-price");
+  const targetElement = $("trade-price-target");
+  const chainlinkPrice = chainlinkLive && Number.isFinite(data.chainlink_btc_usd)
+    ? Number(data.chainlink_btc_usd)
+    : null;
+  const targetPrice = data.current_session && Number.isFinite(data.current_session.price_to_beat)
+    ? Number(data.current_session.price_to_beat)
+    : null;
 
-function renderPnl(id, value) {
-  const element = $(id);
-  element.textContent = money(value);
-  element.classList.toggle("positive", Number.isFinite(value) && value > 0);
-  element.classList.toggle("negative", Number.isFinite(value) && value < 0);
+  priceElement.textContent = money(chainlinkPrice);
+  targetElement.className = "trade-price-target";
+  if (!Number.isFinite(chainlinkPrice)) {
+    targetElement.textContent = "CHAINLINK · Waiting for a live BTC price";
+    return;
+  }
+  if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+    targetElement.textContent = "CHAINLINK · Waiting for this market's target price";
+    return;
+  }
+
+  const rawDifference = chainlinkPrice - targetPrice;
+  const difference = Math.abs(rawDifference) < .005 ? 0 : rawDifference;
+  const percentage = difference / targetPrice * 100;
+  const direction = difference > 0 ? "positive" : difference < 0 ? "negative" : "neutral";
+  const relationship = difference > 0 ? "above" : difference < 0 ? "below" : "at";
+  targetElement.classList.add(direction);
+  targetElement.textContent = `CHAINLINK · ${signedMoney(difference)} (${signedPercent(percentage)}) ${relationship} target`;
 }
+function capacityBlockerMessage(required, trading) {
+  const available = trading.available_usdc;
+  const allowance = trading.allowance_usdc;
+  const balanceLow = Number.isFinite(available) && available + 1e-9 < required;
+  const approvalLow = Number.isFinite(allowance) && allowance + 1e-9 < required;
+  const balanceShortfall = balanceLow ? Math.max(0, required - available) : 0;
+  const approvalShortfall = approvalLow ? Math.max(0, required - allowance) : 0;
+
+  if (balanceLow && approvalLow) {
+    return `Insufficient pUSD balance and approval: ${money(available)} is available and ${money(allowance)} is approved, but ${money(required)} is required. Add at least ${money(balanceShortfall)} pUSD and increase approval by ${money(approvalShortfall)}.`;
+  }
+  if (balanceLow) {
+    return `Insufficient pUSD balance: ${money(available)} is available, but ${money(required)} is required. Add at least ${money(balanceShortfall)} pUSD to trade.`;
+  }
+  if (approvalLow) {
+    return `pUSD trading approval is too low: ${money(allowance)} is approved, but ${money(required)} is required. Increase approval by at least ${money(approvalShortfall)}.`;
+  }
+  return `Available pUSD or trading approval is below the required ${money(required)} order size.`;
+}
+function setTradeNotice(message, tone = "info") {
+  const element = $("trade-notice");
+  element.textContent = message;
+  element.classList.toggle("warning", tone === "warning");
+  element.classList.toggle("error", tone === "error");
+}
+function timeLabel(value) { return Number.isFinite(value) ? new Date(value).toLocaleString() : "—"; }
+function shortTime(value) { return Number.isFinite(value) ? new Date(value).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "—"; }
+function requestId() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`; }
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[character]));
+}
+function midpoint(quote) {
+  if (!quote) return null;
+  if (Number.isFinite(quote.best_bid) && Number.isFinite(quote.best_ask)) return (quote.best_bid + quote.best_ask) / 2;
+  return quote.best_ask ?? quote.best_bid ?? quote.last_trade ?? null;
+}
+function setPnl(id, value) {
+  const element = $(id);
+  const normalized = Number.isFinite(value) && Math.abs(value) < .005 ? 0 : value;
+  element.textContent = money(normalized);
+  element.classList.toggle("positive", Number.isFinite(normalized) && normalized > 0);
+  element.classList.toggle("negative", Number.isFinite(normalized) && normalized < 0);
+}
+function sideLabel(side) {
+  return ({buy_up: "BUY UP", buy_down: "BUY DOWN"})[side] || "SELECT UP OR DOWN";
+}
+function ledgerSideLabel(side) {
+  return ({BuyUp: "Buy UP", BuyDown: "Buy DOWN", buy_up: "Buy UP", buy_down: "Buy DOWN"})[side] || String(side || "—");
+}
+function mechanismLabel(mechanism) {
+  return ({FastTaker: "Fast Taker", FastMaker: "Fast Maker", fast_taker: "Fast Taker", fast_maker: "Fast Maker"})[mechanism] || String(mechanism || "—");
+}
+function statusLabel(status) {
+  const value = String(status || "—").replaceAll("_", " ");
+  return value === "—" ? value : value.charAt(0).toUpperCase() + value.slice(1);
+}
+function makerOrderAvailable() {
+  if (!snapshot || !snapshot.current_session) return false;
+  const minimumRemaining = Number(snapshot.minimum_maker_remaining_ms);
+  const remaining = snapshot.current_session.end_ms - snapshot.now_ms;
+  return Number.isFinite(minimumRemaining) && remaining >= minimumRemaining;
+}
+function syncMechanismControls() {
+  const maker = document.querySelector('[data-mechanism="maker"]');
+  const makerAvailable = makerOrderAvailable();
+  if (maker) {
+    maker.disabled = !makerAvailable;
+    const seconds = snapshot && Number.isFinite(snapshot.minimum_maker_remaining_ms) ? Math.ceil(snapshot.minimum_maker_remaining_ms / 1000) : 183;
+    maker.title = makerAvailable ? "" : `Fast Maker requires at least ${seconds} seconds remaining in the market session.`;
+  }
+  if (selectedMechanism === "maker" && !makerAvailable) selectedMechanism = "taker";
+  document.querySelectorAll("[data-mechanism]").forEach(button => button.classList.toggle("active", button.dataset.mechanism === selectedMechanism));
+}
+function validBookLevels(levels) {
+  return Array.isArray(levels) ? levels.filter(level =>
+    Number.isFinite(Number(level.price)) && Number.isFinite(Number(level.size)) &&
+    Number(level.price) >= 0 && Number(level.price) <= 1 && Number(level.size) > 0
+  ).slice(0, 8) : [];
+}
+function bookFor(outcome) {
+  return snapshot && snapshot.orderbook ? snapshot.orderbook[outcome] : null;
+}
+function minimumNominalFor(outcome, mechanism = selectedMechanism) {
+  if (!snapshot || !bookFreshness[outcome]) return null;
+  const quote = snapshot[outcome] || {};
+  const bestAsk = Number(quote.best_ask);
+  const tickSize = Number(quote.tick_size);
+  const minimumShares = Number(quote.minimum_order_size);
+  if (![bestAsk, tickSize, minimumShares].every(Number.isFinite) || bestAsk <= 0 || tickSize <= 0 || minimumShares <= 0) return null;
+  const rawPrice = mechanism === "taker" ? bestAsk + tickSize : bestAsk - .03;
+  const bounded = Math.max(.01, Math.min(.99, rawPrice));
+  const price = mechanism === "taker"
+    ? Math.ceil((bounded - tickSize * 1e-9) / tickSize) * tickSize
+    : Math.round(bounded / tickSize) * tickSize;
+  const requiredShares = Math.ceil(minimumShares * 100 - 1e-9) / 100;
+  let nominal = Math.max(Number(snapshot.minimum_buy_order_usd) || 1, Math.ceil(requiredShares * price * 100 - 1e-9) / 100);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const shares = Math.floor((nominal / price) * 100) / 100;
+    if (shares + 1e-9 >= minimumShares) return Math.round(nominal * 100) / 100;
+    nominal = Math.round((nominal + .01) * 100) / 100;
+  }
+  return null;
+}
+function requiredPresetFor(outcome) {
+  const minimum = minimumNominalFor(outcome);
+  return Number.isFinite(minimum) ? (nominals.find(value => value + 1e-9 >= minimum) ?? null) : null;
+}
+function outcomeHasExecutableNominal(outcome) {
+  const capacity = currentBuyCapacity();
+  const minimum = minimumNominalFor(outcome);
+  return Number.isFinite(capacity) && Number.isFinite(minimum) && nominals.some(value => value + 1e-9 >= minimum && value <= capacity + 1e-9);
+}
+function isBookFresh(book) {
+  if (!marketFeedIsLive || !snapshot || !book || !Number.isFinite(book.updated_at_ms)) return false;
+  const age = Math.max(0, snapshot.now_ms - book.updated_at_ms);
+  return age <= ORDERBOOK_STALE_MS && validBookLevels(book.asks).length > 0;
+}
+function renderBookRows(levels, side) {
+  if (!levels.length) return `<div class="book-empty">No live ${side === "bid" ? "bid" : "ask"} depth is available.</div>`;
+  const maxSize = Math.max(...levels.map(level => Number(level.size)), 1e-9);
+  const tint = side === "bid" ? "rgba(0,255,136,.08)" : "rgba(255,77,95,.08)";
+  const direction = side === "bid" ? "to left" : "to right";
+  return levels.map(level => {
+    const price = Number(level.price);
+    const size = Number(level.size);
+    const depth = Math.max(2, Math.min(100, size / maxSize * 100));
+    return `<div class="book-row" style="background:linear-gradient(${direction},${tint} 0%,${tint} ${depth}%,transparent ${depth}%)"><span class="price ${side}">${tokenPrice(price)}</span><span>${size.toLocaleString(undefined,{maximumFractionDigits:2})}</span><span>${money(price * size)}</span></div>`;
+  }).join("");
+}
+function renderOrderbook() {
+  const books = snapshot && snapshot.orderbook ? snapshot.orderbook : {};
+  bookFreshness = {up: isBookFresh(books.up), down: isBookFresh(books.down)};
+  const book = bookFor(orderbookOutcome);
+  const fresh = bookFreshness[orderbookOutcome];
+  const bids = fresh ? validBookLevels(book && book.bids) : [];
+  const asks = fresh ? validBookLevels(book && book.asks) : [];
+  const bestBid = bids.length ? Number(bids[0].price) : null;
+  const bestAsk = asks.length ? Number(asks[0].price) : null;
+  $("book-best-bid").textContent = tokenPrice(bestBid);
+  $("book-best-ask").textContent = tokenPrice(bestAsk);
+  $("book-spread").textContent = Number.isFinite(bestBid) && Number.isFinite(bestAsk) && bestAsk >= bestBid ? tokenPrice(bestAsk - bestBid) : "—";
+  $("book-bids").innerHTML = renderBookRows(bids, "bid");
+  $("book-asks").innerHTML = renderBookRows(asks, "ask");
+  const state = $("orderbook-state");
+  state.textContent = fresh ? "LIVE" : (marketFeedIsLive ? "STALE" : "OFFLINE");
+  state.classList.toggle("live", fresh);
+
+  const bidDepth = bids.reduce((sum, level) => sum + Number(level.size), 0);
+  const askDepth = asks.reduce((sum, level) => sum + Number(level.size), 0);
+  const totalDepth = bidDepth + askDepth;
+  const bidPercent = totalDepth > 0 ? bidDepth / totalDepth * 100 : 50;
+  const askPercent = totalDepth > 0 ? 100 - bidPercent : 50;
+  $("depth-bid-fill").style.width = `${bidPercent}%`;
+  $("depth-ask-fill").style.width = `${askPercent}%`;
+  $("depth-bid-label").textContent = totalDepth > 0 ? `B ${Math.round(bidPercent)}%` : "B —";
+  $("depth-ask-label").textContent = totalDepth > 0 ? `${Math.round(askPercent)}% A` : "— A";
+  $("depth-balance").setAttribute("aria-label", totalDepth > 0 ? `Bid depth ${Math.round(bidPercent)} percent, ask depth ${Math.round(askPercent)} percent` : "Order book depth unavailable");
+  const quote = snapshot && snapshot[orderbookOutcome] ? snapshot[orderbookOutcome] : {};
+  const minimum = minimumNominalFor(orderbookOutcome);
+  $("book-rules").textContent = fresh && Number.isFinite(quote.minimum_order_size) && Number.isFinite(quote.tick_size)
+    ? `Minimum ${Number(quote.minimum_order_size).toLocaleString(undefined,{maximumFractionDigits:2})} shares · ${tokenPrice(Number(quote.tick_size))} tick · ${Number.isFinite(minimum) ? `${money(minimum)} ${selectedMechanism === "taker" ? "taker" : "maker"} minimum` : "order minimum unavailable"}`
+    : "Waiting for current market order rules.";
+}
+function setHeaderStatus(label, tone = "offline") {
+  $("status-text").textContent = label;
+  $("header-status").classList.toggle("live", tone === "live");
+  $("header-status").classList.toggle("warning", tone === "warning");
+}
+
+function renderClock() {
+  const now = new Date();
+  const clock = `${String(now.getUTCHours()).padStart(2,"0")}:${String(now.getUTCMinutes()).padStart(2,"0")}:${String(now.getUTCSeconds()).padStart(2,"0")}.${String(now.getUTCMilliseconds()).padStart(3,"0")}`;
+  $("header-clock").textContent = clock;
+  $("bottom-time").textContent = `${now.toISOString().slice(0,10)} ${clock} UTC`;
+}
+setInterval(renderClock, 50);
+renderClock();
 
 function sendCommand(command) {
   if (!dashboardAuthenticated) {
@@ -214,186 +915,464 @@ function connectCommands() {
   if (!dashboardAuthenticated) return;
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   commandSocket = new WebSocket(`${scheme}://${location.host}/command-ws`);
-  commandSocket.onclose = () => {
-    if (dashboardAuthenticated) setTimeout(connectCommands, 1500);
-  };
+  commandSocket.onclose = () => { if (dashboardAuthenticated) setTimeout(connectCommands, 1500); };
   commandSocket.onerror = () => commandSocket.close();
   commandSocket.onmessage = event => {
-    const ack = JSON.parse(event.data);
-    if (!ack.ok) $("trade-notice").textContent = ack.error || "Command rejected";
+    try {
+      const ack = JSON.parse(event.data);
+      if (!ack.ok) $("trade-notice").textContent = ack.error || "Command rejected";
+    } catch (_) {}
   };
-}
-
-function submitClaim(position) {
-  if (!dashboardAuthenticated) {
-    $("claim-status").textContent = "Dashboard access is not authenticated. Open the current link printed by PolyTread.";
-    return;
-  }
-  const value = Number(position.redeemable_value_usd);
-  const prompt = `Claim ${money(value)} from ${position.title || position.condition_id}?\n\nThis sends an on-chain Polygon transaction and may first send a one-time adapter approval. POL gas is required.`;
-  if (!confirm(prompt)) return;
-  $("claim-status").textContent = "Queueing the explicitly confirmed manual claim...";
-  const envelope = JSON.stringify({request_id: requestId(), command: {
-    type: "claim_position",
-    payload: {
-      condition_id: position.condition_id,
-      expected_redeemable_value_usd: value
-    }
-  }});
-  fetch("/cmd", {method: "POST", headers: {"Content-Type": "application/json"}, body: envelope})
-    .then(response => response.json())
-    .then(ack => { if (!ack.ok) throw new Error(ack.error || "Claim rejected"); })
-    .catch(error => $("claim-status").textContent = error.message);
 }
 
 function renderNominals() {
-  $("nominals").innerHTML = nominals.map(value => `<button class="choice ${value === selectedNominal ? "active" : ""}" data-nominal="${value}">$${value.toFixed(2)}</button>`).join("");
+  $("nominals").innerHTML = nominals.map(value => `<button class="choice-button ${value === selectedNominal ? "active" : ""}" data-nominal="${value}" type="button">$${value.toFixed(2)}</button>`).join("");
   document.querySelectorAll("[data-nominal]").forEach(button => button.onclick = () => {
     selectedNominal = Number(button.dataset.nominal);
-    renderNominals();
+    syncNominalControls();
+    updateTradeSelection();
   });
+  syncNominalControls();
+}
+
+function currentBuyCapacity() {
+  const trading = snapshot && snapshot.trading ? snapshot.trading : {};
+  if (!balanceDataFresh || !Number.isFinite(trading.available_usdc) || !Number.isFinite(trading.allowance_usdc)) return null;
+  return Math.min(trading.available_usdc, trading.allowance_usdc);
+}
+
+function syncNominalControls() {
+  const capacity = currentBuyCapacity();
+  const selectedOutcome = selectedSide ? (selectedSide.endsWith("_up") ? "up" : "down") : null;
+  const minimums = selectedOutcome
+    ? [minimumNominalFor(selectedOutcome)]
+    : [minimumNominalFor("up"), minimumNominalFor("down")];
+  const buttonIsValid = value => balanceDataFresh && Number.isFinite(capacity) && value <= capacity + 1e-9 && minimums.some(minimum => Number.isFinite(minimum) && value + 1e-9 >= minimum);
+  if (!buttonIsValid(selectedNominal)) {
+    const valid = nominals.filter(buttonIsValid);
+    if (valid.length) selectedNominal = valid[0];
+  }
+  document.querySelectorAll("[data-nominal]").forEach(button => {
+    const value = Number(button.dataset.nominal);
+    button.classList.toggle("active", value === selectedNominal);
+    button.disabled = !buttonIsValid(value);
+  });
+}
+
+function updateTradeSelection() {
+  document.querySelectorAll("[data-side]").forEach(button => button.classList.toggle("active", button.dataset.side === selectedSide));
+  const execute = $("execute-button");
+  const trading = snapshot && snapshot.trading ? snapshot.trading : {};
+  const connectivity = snapshot && snapshot.connectivity ? snapshot.connectivity : {};
+  const capacity = currentBuyCapacity();
+  const commonReady = Boolean(
+    connected && dashboardAuthenticated && snapshot && connectivity.setup_ready !== false &&
+    snapshot.web_trading_allowed && trading.enabled && trading.configured &&
+    snapshot.current_session && !trading.in_flight_intent &&
+    Number.isFinite(capacity) && capacity + 1e-9 >= selectedNominal &&
+    (selectedMechanism !== "maker" || makerOrderAvailable())
+  );
+  document.querySelectorAll("[data-side]").forEach(button => {
+    const outcome = button.dataset.side.endsWith("_up") ? "up" : "down";
+    const minimum = minimumNominalFor(outcome);
+    button.title = Number.isFinite(minimum) ? `${button.textContent.trim()} currently requires at least ${money(minimum)}.` : "Waiting for current market order rules.";
+    button.disabled = !commonReady || !bookFreshness[outcome] || !outcomeHasExecutableNominal(outcome);
+  });
+  const selectedOutcome = selectedSide ? (selectedSide.endsWith("_up") ? "up" : "down") : null;
+  const selectedMinimum = selectedOutcome ? minimumNominalFor(selectedOutcome) : null;
+  const orderReady = commonReady && selectedOutcome && bookFreshness[selectedOutcome] && Number.isFinite(selectedMinimum) && selectedNominal + 1e-9 >= selectedMinimum;
+  execute.disabled = !orderReady || !selectedSide;
+  execute.textContent = selectedSide ? `${sideLabel(selectedSide)} · $${selectedNominal.toFixed(2)}` : "SELECT UP OR DOWN";
+  execute.classList.toggle("buy-ready", Boolean(selectedSide && orderReady));
 }
 
 document.querySelectorAll("[data-mechanism]").forEach(button => button.onclick = () => {
   selectedMechanism = button.dataset.mechanism;
-  document.querySelectorAll("[data-mechanism]").forEach(candidate => candidate.classList.toggle("active", candidate === button));
+  syncMechanismControls();
+  renderOrderbook();
+  syncNominalControls();
+  updateTradeSelection();
 });
-
+document.querySelectorAll("[data-book-outcome]").forEach(button => button.onclick = () => {
+  orderbookOutcome = button.dataset.bookOutcome;
+  document.querySelectorAll("[data-book-outcome]").forEach(candidate => candidate.classList.toggle("active", candidate === button));
+  renderOrderbook();
+  updateTradeSelection();
+});
+document.querySelectorAll("[data-side]").forEach(button => button.onclick = () => {
+  selectedSide = selectedSide === button.dataset.side ? null : button.dataset.side;
+  syncNominalControls();
+  updateTradeSelection();
+});
+$("execute-button").onclick = () => {
+  if (!snapshot || !snapshot.current_session || !selectedSide) return;
+  const confirmation = `${sideLabel(selectedSide)} $${selectedNominal.toFixed(2)} using ${selectedMechanism === "taker" ? "Fast Taker" : "Fast Maker"}?`;
+  if (!confirm(confirmation)) return;
+  sendCommand({type: "submit_order", payload: {
+    side: selectedSide,
+    nominal_usd: selectedNominal,
+    mechanism: selectedMechanism,
+    expected_session_slug: snapshot.current_session.slug
+  }});
+};
 $("arm").onclick = () => {
   const enabled = !(snapshot && snapshot.trading && snapshot.trading.enabled);
   sendCommand({type: "set_enabled", payload: {enabled}});
 };
 
-document.querySelectorAll("[data-side]").forEach(button => button.onclick = () => {
-  if (!snapshot || !snapshot.current_session) return;
-  const side = button.dataset.side;
-  const prompt = `${side.replace("_", " ").toUpperCase()} $${selectedNominal.toFixed(2)} using ${selectedMechanism}?`;
-  if (!confirm(prompt)) return;
-  sendCommand({type: "submit_order", payload: {
-    side,
-    nominal_usd: selectedNominal,
-    mechanism: selectedMechanism,
-    expected_session_slug: snapshot.current_session.slug
-  }});
+document.querySelectorAll("[data-chart-mode]").forEach(button => button.onclick = () => {
+  chartMode = button.dataset.chartMode;
+  document.querySelectorAll("[data-chart-mode]").forEach(candidate => candidate.classList.toggle("active", candidate === button));
+  if (snapshot) drawChart(snapshot.price_history || []);
 });
+document.addEventListener("keydown", event => {
+  if (event.target && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
+  const mode = ({"1":"binance", "2":"chainlink", "3":"both"})[event.key];
+  if (!mode) return;
+  const target = document.querySelector(`[data-chart-mode="${mode}"]`);
+  if (target) target.click();
+});
+
+function openOverlay(id) { $(id).hidden = false; }
+function closeOverlay(id) { $(id).hidden = true; }
+$("claims-open").onclick = () => openOverlay("claims-overlay");
+$("claims-close").onclick = () => closeOverlay("claims-overlay");
+$("claims-overlay").onclick = event => { if (event.target === $("claims-overlay")) closeOverlay("claims-overlay"); };
+function openActivity() { renderActivity(); openOverlay("activity-overlay"); }
+$("activity-open").onclick = openActivity;
+$("activity-open-inline").onclick = openActivity;
+$("activity-close").onclick = () => closeOverlay("activity-overlay");
+$("activity-overlay").onclick = event => { if (event.target === $("activity-overlay")) closeOverlay("activity-overlay"); };
+document.querySelectorAll("[data-activity-mode]").forEach(button => button.onclick = () => {
+  activityMode = button.dataset.activityMode;
+  document.querySelectorAll("[data-activity-mode]").forEach(candidate => candidate.classList.toggle("active", candidate === button));
+  renderActivity();
+});
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  closeOverlay("claims-overlay");
+  closeOverlay("activity-overlay");
+});
+
+function submitClaim(position) {
+  if (!dashboardAuthenticated) {
+    $("claim-status").textContent = "Dashboard access is not authenticated.";
+    return;
+  }
+  const value = Number(position.redeemable_value_usd);
+  if (!confirm(`Claim ${money(value)} from ${position.title || position.condition_id}?\n\nThis submits an explicitly confirmed Polygon transaction. POL gas may be required.`)) return;
+  $("claim-status").textContent = "Queueing the manually confirmed claim…";
+  sendCommand({type: "claim_position", payload: {
+    condition_id: position.condition_id,
+    expected_redeemable_value_usd: value
+  }});
+}
 
 function render(data) {
   snapshot = data;
   const session = data.current_session;
+  if ((session && session.slug) !== lastSessionSlug) {
+    selectedSide = null;
+    orderbookOutcome = "up";
+    document.querySelectorAll("[data-book-outcome]").forEach(button => button.classList.toggle("active", button.dataset.bookOutcome === "up"));
+    lastSessionSlug = session ? session.slug : null;
+  }
   const connectivity = data.connectivity || {};
   const networkKind = connectivity.kind || "checking";
-  const networkBanner = $("network-banner");
   const networkProblem = networkKind !== "available";
-  networkBanner.hidden = !networkProblem;
-  networkBanner.className = networkProblem
-    ? `network-banner ${networkKind === "degraded" || networkKind === "checking" ? "warning" : "error"}`
-    : "network-banner";
+  $("network-banner").hidden = !networkProblem;
+  $("network-banner").classList.toggle("error", networkKind !== "degraded" && networkKind !== "checking");
   $("network-headline").textContent = connectivity.headline || "Checking Polymarket connectivity";
-  $("network-detail").textContent = connectivity.detail || "Testing real REST and WebSocket endpoints.";
-  $("chainlink-price").textContent = money(data.chainlink_btc_usd);
-  $("binance-price").textContent = money(data.binance_btc_usd);
-  $("up-price").textContent = tokenPrice(data.up && (data.up.last_trade ?? midpoint(data.up)));
-  $("down-price").textContent = tokenPrice(data.down && (data.down.last_trade ?? midpoint(data.down)));
+  $("network-detail").textContent = connectivity.detail || "Testing the required live endpoints.";
+
   const portfolio = data.portfolio || {};
-  renderPnl("current-pnl", portfolio.current_open_pnl_usd);
-  renderPnl("daily-pnl", portfolio.today_realized_pnl_usd);
-  $("session-title").textContent = session ? session.title : "Waiting for a live market";
-  $("session-slug").textContent = session ? session.slug : "";
-  $("target-price").textContent = `Price to beat ${session ? money(session.price_to_beat) : "—"}`;
+  const trading = data.trading || {};
+  const portfolioAgeMs = Number.isFinite(portfolio.updated_at_ms) ? Math.max(0, data.now_ms - portfolio.updated_at_ms) : Infinity;
+  const portfolioFresh = portfolioAgeMs <= 90_000;
+  const balanceAgeMs = Number.isFinite(trading.balance_updated_ms) ? Math.max(0, data.now_ms - trading.balance_updated_ms) : Infinity;
+  const maximumBalanceAgeMs = Number(data.maximum_trading_balance_age_ms) || 10_000;
+  balanceDataFresh = balanceAgeMs <= maximumBalanceAgeMs && !trading.balance_error;
+  setPnl("current-pnl", portfolioFresh ? portfolio.current_open_pnl_usd : null);
+  setPnl("daily-pnl", portfolioFresh ? portfolio.today_realized_pnl_usd : null);
+  setPnl("pnl-current", portfolioFresh ? portfolio.current_open_pnl_usd : null);
+  setPnl("pnl-realized", portfolioFresh ? portfolio.today_realized_pnl_usd : null);
+  const availableBalance = balanceDataFresh && Number.isFinite(trading.available_usdc) ? trading.available_usdc : null;
+  const availableAllowance = balanceDataFresh && Number.isFinite(trading.allowance_usdc) ? trading.allowance_usdc : null;
+  const balanceBelowMinimum = Number.isFinite(availableBalance) && availableBalance + 1e-9 < nominals[0];
+  const allowanceBelowMinimum = Number.isFinite(availableAllowance) && availableAllowance + 1e-9 < nominals[0];
+  $("header-balance").textContent = money(availableBalance);
+  $("pnl-balance").textContent = money(availableBalance);
+  $("pnl-allowance").textContent = approval(availableAllowance);
+  $("header-balance").classList.toggle("negative", balanceBelowMinimum);
+  $("pnl-balance").classList.toggle("negative", balanceBelowMinimum);
+  $("pnl-allowance").classList.toggle("negative", allowanceBelowMinimum);
+  $("header-balance").title = balanceBelowMinimum
+    ? `${money(availableBalance)} available; the minimum order is ${money(nominals[0])}.`
+    : "Available pUSD for new orders.";
+  $("pnl-current-value").textContent = portfolioFresh ? money(portfolio.current_value_usd) : "—";
+  $("pnl-open-positions").textContent = portfolioFresh && Number.isFinite(portfolio.open_positions) ? String(portfolio.open_positions) : "—";
+
+  $("header-market").textContent = session ? session.title : "BTC Up or Down · 5 minute";
+  $("header-session").textContent = session ? session.slug : "Waiting for the current market";
+  $("session-name").textContent = session ? session.title : "Waiting for market discovery";
+  $("session-slug").textContent = session ? session.slug : "—";
+  $("price-beat").textContent = session ? money(session.price_to_beat) : "—";
   const remaining = session ? Math.max(0, session.end_ms - data.now_ms) : 0;
   $("countdown").textContent = session ? `${String(Math.floor(remaining / 60000)).padStart(2,"0")}:${String(Math.floor((remaining % 60000) / 1000)).padStart(2,"0")}` : "--:--";
+  $("session-status").textContent = session ? (remaining > 0 ? "Active" : "Closing") : "Loading";
+  $("bottom-session").textContent = session ? `${session.slug} · target ${money(session.price_to_beat)}` : "Waiting for market discovery";
 
-  const trading = data.trading || {};
-  $("arm").textContent = trading.enabled ? "Trading armed" : "Trading off";
+  const feeds = data.feeds || [];
+  const feedIsLive = name => feeds.some(feed => feed.feed === name && feed.connected);
+  const binanceLive = feedIsLive("binance_spot");
+  const chainlinkLive = feedIsLive("chainlink_rtds");
+  const marketFeedLive = feedIsLive("market");
+  marketFeedIsLive = marketFeedLive;
+  $("binance-price").textContent = binanceLive ? money(data.binance_btc_usd) : "—";
+  $("chainlink-price").textContent = chainlinkLive ? money(data.chainlink_btc_usd) : "—";
+  renderChainlinkTargetComparison(data, chainlinkLive);
+  $("up-price").textContent = marketFeedLive ? tokenPrice(data.up && (data.up.last_trade ?? midpoint(data.up))) : "—";
+  $("down-price").textContent = marketFeedLive ? tokenPrice(data.down && (data.down.last_trade ?? midpoint(data.down))) : "—";
+  $("best-ask-up").textContent = marketFeedLive ? tokenPrice(data.up && data.up.best_ask) : "—";
+  $("best-ask-down").textContent = marketFeedLive ? tokenPrice(data.down && data.down.best_ask) : "—";
+
+  const connectedCount = feeds.filter(feed => feed.connected).length;
+  $("feed-summary").textContent = feeds.length ? `${connectedCount}/${feeds.length} live` : "Waiting";
+  $("feeds").innerHTML = feeds.map(feed => `<span class="feed-chip ${feed.connected ? "live" : ""}">${escapeHtml(feed.feed)} · ${feed.connected ? "live" : "offline"}</span>`).join("");
+  const marketLive = Boolean(session && feeds.length && connectedCount === feeds.length && networkKind === "available");
+  setHeaderStatus(marketLive ? "LIVE" : "DEGRADED", marketLive ? "live" : "warning");
+  syncMechanismControls();
+  renderOrderbook();
+
   $("arm").classList.toggle("on", Boolean(trading.enabled));
-  $("arm").disabled = !connected || (!data.web_trading_allowed && !trading.enabled) || (!trading.configured && !trading.enabled);
-  $("trade-notice").textContent = !data.web_trading_allowed ? "Browser trading is disabled. Restart with --allow-web-trading to opt in." : (trading.order_status || "Ready");
-  $("balance").textContent = `Balance ${money(trading.available_usdc)}`;
-  $("allowance").textContent = `Allowance ${money(trading.allowance_usdc)}`;
-  const networkReady = connectivity.setup_ready !== false;
-  const orderReady = connected && networkReady && data.web_trading_allowed && trading.enabled && trading.configured && session && !trading.in_flight_intent;
-  document.querySelectorAll("[data-side]").forEach(button => button.disabled = !orderReady);
+  $("trade-enabled-label").textContent = trading.enabled ? "Trading armed" : "Trading off";
+  const tradingBackendReady = trading.configured && balanceDataFresh;
+  $("arm").disabled = !connected || (!data.web_trading_allowed && !trading.enabled) || (!tradingBackendReady && !trading.enabled);
+  const buyCapacity = currentBuyCapacity();
+  const upPreset = requiredPresetFor("up");
+  const downPreset = requiredPresetFor("down");
+  const lowestCurrentPreset = [upPreset, downPreset].filter(Number.isFinite).sort((left, right) => left - right)[0];
+  let tradeNoticeMessage;
+  let tradeNoticeTone = "info";
+  if (!data.web_trading_allowed) {
+    tradeNoticeMessage = "Browser trading is view-only. Run setup again and explicitly enable browser orders to opt in.";
+    tradeNoticeTone = "warning";
+  } else if (!balanceDataFresh) {
+    const balanceError = trading.balance_error || (String(trading.order_status || "").startsWith("Error:") ? trading.order_status : null);
+    tradeNoticeMessage = balanceError
+      ? `Trading balance check failed: ${balanceError}`
+      : "Waiting for a fresh pUSD balance and trading approval.";
+    tradeNoticeTone = balanceError ? "error" : "warning";
+  } else if (!Number.isFinite(buyCapacity)) {
+    tradeNoticeMessage = "Waiting for a confirmed pUSD balance and trading approval.";
+    tradeNoticeTone = "warning";
+  } else if (buyCapacity + 1e-9 < nominals[0]) {
+    tradeNoticeMessage = capacityBlockerMessage(nominals[0], trading);
+    tradeNoticeTone = "error";
+  } else if (!bookFreshness.up && !bookFreshness.down) {
+    tradeNoticeMessage = "Waiting for a fresh Polymarket order book before enabling orders.";
+    tradeNoticeTone = "warning";
+  } else if (!Number.isFinite(lowestCurrentPreset)) {
+    tradeNoticeMessage = "Waiting for the current market's minimum size and tick rules.";
+    tradeNoticeTone = "warning";
+  } else if (buyCapacity + 1e-9 < lowestCurrentPreset) {
+    tradeNoticeMessage = capacityBlockerMessage(lowestCurrentPreset, trading);
+    tradeNoticeTone = "error";
+  } else {
+    tradeNoticeMessage = trading.order_status || "Ready for a manually confirmed order.";
+    tradeNoticeTone = String(tradeNoticeMessage).startsWith("Error:") ? "error" : "info";
+  }
+  setTradeNotice(tradeNoticeMessage, tradeNoticeTone);
 
-  $("feeds").innerHTML = (data.feeds || []).map(feed => `<span class="feed ${feed.connected ? "live" : ""}">${escapeHtml(feed.feed)} · ${feed.connected ? "connected" : "offline"}</span>`).join("");
   renderTrades(trading.ledger || []);
-  renderClaims(portfolio);
+  renderClaims(portfolio, portfolioFresh);
   renderClaimHistory(portfolio.claim_history || []);
-  renderSessions(data.past_sessions || []);
+  syncNominalControls();
+  updateTradeSelection();
   drawChart(data.price_history || []);
+  if (!$("activity-overlay").hidden) renderActivity();
 }
 
-function midpoint(quote) {
-  return quote && Number.isFinite(quote.best_bid) && Number.isFinite(quote.best_ask) ? (quote.best_bid + quote.best_ask) / 2 : (quote && (quote.best_ask ?? quote.best_bid));
-}
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, character => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[character]));
-}
 function renderTrades(rows) {
-  $("trades").innerHTML = rows.length ? rows.slice(0, 40).map(row => `<tr><td>${timeLabel(row.updated_at_ms)}</td><td>${escapeHtml(row.market_label)}</td><td>${escapeHtml(row.trade_side)}</td><td>${escapeHtml(row.mechanism)}</td><td>${tokenPrice(row.price)}</td><td>${Number.isFinite(row.shares) ? Number(row.shares).toFixed(2) : "—"}</td><td>${escapeHtml(row.status)}</td></tr>`).join("") : `<tr><td class="empty" colspan="7">No trades stored yet.</td></tr>`;
+  $("trades").innerHTML = rows.length ? rows.slice(0, 6).map(row => `
+    <div class="trade-row">
+      <div class="trade-time">${shortTime(row.updated_at_ms)}</div>
+      <div class="trade-main"><div class="trade-title">${escapeHtml(row.market_label)}</div><div class="trade-detail">${escapeHtml(ledgerSideLabel(row.trade_side))} · ${escapeHtml(mechanismLabel(row.mechanism))} · ${tokenPrice(row.price)} · ${Number.isFinite(row.shares) ? Number(row.shares).toFixed(2) : "—"} shares</div></div>
+      <div class="trade-status">${escapeHtml(statusLabel(row.status))}</div>
+    </div>`).join("") : `<div class="empty-state">No orders stored yet.</div>`;
 }
-function renderClaims(portfolio) {
-  const rows = portfolio.claimable_positions || [];
+
+function renderClaims(portfolio, portfolioFresh) {
+  const rows = portfolioFresh ? (portfolio.claimable_positions || []) : [];
   const inFlight = portfolio.claim_in_flight_condition_id;
-  $("claim-status").textContent = portfolio.last_error || portfolio.claim_status || "No claim submitted";
+  const total = rows.reduce((sum, row) => sum + (Number(row.redeemable_value_usd) || 0), 0);
+  $("claims-summary").textContent = portfolioFresh ? `${rows.length} position${rows.length === 1 ? "" : "s"} · ${money(total)} claimable` : "Portfolio data unavailable";
+  $("claims-total").textContent = portfolioFresh ? money(total) : "—";
+  $("claim-status").textContent = portfolio.last_error || (portfolioFresh ? (portfolio.claim_status || "No claim submitted") : "Waiting for a fresh portfolio response.");
   $("claim-note").textContent = portfolio.direct_claim_supported
-    ? "EOA claims are submitted only after you press Claim and confirm. No background or automatic claim process exists."
-    : `This ${portfolio.wallet_type || "contract"} wallet requires Polymarket's authenticated relayer. Positions remain visible here; use the official Portfolio page to claim manually.`;
-  $("claims").innerHTML = rows.length ? rows.map((row, index) => {
+    ? "Every claim requires you to press Claim and approve the confirmation. No background claim process runs."
+    : `This ${portfolio.wallet_type || "contract"} wallet claims through Polymarket's authenticated wallet flow. Positions remain visible here; open Portfolio to claim manually.`;
+  $("claims").innerHTML = !portfolioFresh ? `<div class="empty-state">Claimable positions are unavailable until the portfolio connection refreshes.</div>` : rows.length ? rows.map((row, index) => {
     const action = portfolio.direct_claim_supported
-      ? `<button class="claim-action" data-claim-index="${index}" ${inFlight ? "disabled" : ""}>${inFlight === row.condition_id ? "Claiming…" : "Claim"}</button>`
+      ? `<button class="claim-action" data-claim-index="${index}" type="button" ${inFlight ? "disabled" : ""}>${inFlight === row.condition_id ? "Claiming…" : "Claim"}</button>`
       : `<a class="claim-action external" href="https://polymarket.com/portfolio" target="_blank" rel="noopener noreferrer">Open Portfolio</a>`;
-    return `<tr><td>${escapeHtml(row.title || row.slug)}</td><td>${escapeHtml(row.outcomes)}</td><td>${Number.isFinite(row.shares) ? Number(row.shares).toFixed(2) : "—"}</td><td>${money(row.redeemable_value_usd)}</td><td>${money(row.cash_pnl_usd)}</td><td>${action}</td></tr>`;
-  }).join("") : `<tr><td class="empty" colspan="6">No claimable positions right now.</td></tr>`;
+    return `<div class="claim-row"><div><div class="claim-name">${escapeHtml(row.title || row.slug)}</div><div class="claim-meta">${escapeHtml(row.outcomes)} · ${Number.isFinite(row.shares) ? Number(row.shares).toFixed(2) : "—"} shares</div><div class="claim-values"><span>Redeemable <strong>${money(row.redeemable_value_usd)}</strong></span><span>PnL <strong>${money(row.cash_pnl_usd)}</strong></span></div></div>${action}</div>`;
+  }).join("") : `<div class="empty-state">No claimable positions right now.</div>`;
   document.querySelectorAll("[data-claim-index]").forEach(button => button.onclick = () => submitClaim(rows[Number(button.dataset.claimIndex)]));
 }
+
 function renderClaimHistory(rows) {
   $("claim-history").innerHTML = rows.length ? rows.slice(0, 40).map(row => {
     const hash = String(row.transaction_hash || "");
-    const link = /^0x[0-9a-fA-F]{64}$/.test(hash)
+    const transaction = /^0x[0-9a-fA-F]{64}$/.test(hash)
       ? `<a href="https://polygonscan.com/tx/${encodeURIComponent(hash)}" target="_blank" rel="noopener noreferrer">${escapeHtml(hash)}</a>`
       : escapeHtml(hash);
-    return `<tr><td>${timeLabel(row.claimed_at_ms)}</td><td>${escapeHtml(row.title)}</td><td><span class="hash">${link}</span></td></tr>`;
-  }).join("") : `<tr><td class="empty" colspan="3">No claims submitted by PolyTread.</td></tr>`;
+    return `<tr><td>${timeLabel(row.claimed_at_ms)}</td><td>${escapeHtml(row.title)}</td><td><span class="hash">${transaction}</span></td></tr>`;
+  }).join("") : `<tr><td colspan="3">No claims submitted by PolyTread.</td></tr>`;
 }
-function renderSessions(rows) {
-  $("sessions").innerHTML = rows.length ? rows.map(row => `<tr><td>${timeLabel(row.session.start_ms)}</td><td>${escapeHtml(row.session.title)}</td><td>${money(row.session.price_to_beat)}</td><td>${Math.round((row.session.end_ms - row.session.start_ms) / 60000)} min</td></tr>`).join("") : `<tr><td class="empty" colspan="4">No past sessions stored yet.</td></tr>`;
+
+function renderActivity() {
+  if (!snapshot) {
+    $("activity-content").innerHTML = `<div class="empty-state">Waiting for local history.</div>`;
+    $("activity-count").textContent = "0 records";
+    return;
+  }
+  const trading = snapshot.trading || {};
+  const portfolio = snapshot.portfolio || {};
+  if (activityMode === "sessions") {
+    const rows = snapshot.past_sessions || [];
+    $("activity-count").textContent = `${rows.length} session${rows.length === 1 ? "" : "s"}`;
+    $("activity-content").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Start</th><th>Market</th><th>Price to Beat</th><th>Window</th><th>Slug</th></tr></thead><tbody>${rows.length ? rows.map(row => `<tr><td>${timeLabel(row.session.start_ms)}</td><td>${escapeHtml(row.session.title)}</td><td>${money(row.session.price_to_beat)}</td><td>${Math.round((row.session.end_ms - row.session.start_ms) / 60000)} min</td><td>${escapeHtml(row.session.slug)}</td></tr>`).join("") : `<tr><td colspan="5">No past sessions stored yet.</td></tr>`}</tbody></table></div>`;
+    return;
+  }
+  if (activityMode === "claims") {
+    const rows = portfolio.claim_history || [];
+    $("activity-count").textContent = `${rows.length} claim${rows.length === 1 ? "" : "s"}`;
+    $("activity-content").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Market</th><th>Transaction</th></tr></thead><tbody>${rows.length ? rows.map(row => `<tr><td>${timeLabel(row.claimed_at_ms)}</td><td>${escapeHtml(row.title)}</td><td><span class="hash">${escapeHtml(row.transaction_hash)}</span></td></tr>`).join("") : `<tr><td colspan="3">No claim history stored yet.</td></tr>`}</tbody></table></div>`;
+    return;
+  }
+  const rows = trading.ledger || [];
+  $("activity-count").textContent = `${rows.length} order${rows.length === 1 ? "" : "s"}`;
+  $("activity-content").innerHTML = `<div class="table-wrap"><table><thead><tr><th>Updated</th><th>Market</th><th>Side</th><th>Execution</th><th>Price</th><th>Shares</th><th>Status</th></tr></thead><tbody>${rows.length ? rows.map(row => `<tr><td>${timeLabel(row.updated_at_ms)}</td><td>${escapeHtml(row.market_label)}</td><td>${escapeHtml(ledgerSideLabel(row.trade_side))}</td><td>${escapeHtml(mechanismLabel(row.mechanism))}</td><td>${tokenPrice(row.price)}</td><td>${Number.isFinite(row.shares) ? Number(row.shares).toFixed(2) : "—"}</td><td>${escapeHtml(statusLabel(row.status))}</td></tr>`).join("") : `<tr><td colspan="7">No order history stored yet.</td></tr>`}</tbody></table></div>`;
 }
 
 function drawChart(rows) {
   const canvas = $("price-chart");
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(320, Math.floor(rect.width));
+  const height = Math.max(260, Math.floor(rect.height));
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  const pixelWidth = Math.floor(width * ratio);
+  const pixelHeight = Math.floor(height * ratio);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
   const context = canvas.getContext("2d");
-  const width = canvas.width, height = canvas.height;
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
   context.clearRect(0, 0, width, height);
-  context.strokeStyle = "#1e3042";
-  for (let line = 1; line < 5; line++) { context.beginPath(); context.moveTo(0, line * height / 5); context.lineTo(width, line * height / 5); context.stroke(); }
-  if (rows.length < 2) return;
-  drawSeries(context, rows, "chainlink_btc_usd", "#62a8ff", width, height, 8, .48);
-  drawSeries(context, rows, "binance_btc_usd", "#f4bb55", width, height, 8, .48);
-  drawSeries(context, rows, "up_price", "#39d98a", width, height, height * .52, .46);
-  drawSeries(context, rows, "down_price", "#ff647c", width, height, height * .52, .46);
-}
-function drawSeries(context, rows, key, color, width, height, top, fraction) {
-  const values = rows.map(row => row[key]).filter(Number.isFinite);
-  if (values.length < 2) return;
+  context.fillStyle = "#0d0d0d";
+  context.fillRect(0, 0, width, height);
+
+  const margin = {left: 72, right: 24, top: 26, bottom: 34};
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  context.strokeStyle = "#202020";
+  context.lineWidth = 1;
+  for (let line = 0; line <= 5; line++) {
+    const y = margin.top + line * plotHeight / 5;
+    context.beginPath(); context.moveTo(margin.left, y); context.lineTo(width - margin.right, y); context.stroke();
+  }
+  for (let line = 0; line <= 6; line++) {
+    const x = margin.left + line * plotWidth / 6;
+    context.beginPath(); context.moveTo(x, margin.top); context.lineTo(x, height - margin.bottom); context.stroke();
+  }
+
+  const boundedRows = rows.slice(-600);
+  const latestTimestamp = Number(boundedRows[boundedRows.length - 1] && boundedRows[boundedRows.length - 1].timestamp_ms);
+  const points = Number.isFinite(latestTimestamp)
+    ? boundedRows.filter(row => Number.isFinite(Number(row.timestamp_ms)) && latestTimestamp - Number(row.timestamp_ms) <= 600000)
+    : boundedRows;
+  const liveFeeds = new Set((snapshot && snapshot.feeds || []).filter(feed => feed.connected).map(feed => feed.feed));
+  const selectedKeys = chartMode === "binance" ? ["binance_btc_usd"] : chartMode === "chainlink" ? ["chainlink_btc_usd"] : ["binance_btc_usd", "chainlink_btc_usd"];
+  const keys = selectedKeys.filter(key => key === "binance_btc_usd" ? liveFeeds.has("binance_spot") : liveFeeds.has("chainlink_rtds"));
+  const values = [];
+  points.forEach(row => keys.forEach(key => { if (Number.isFinite(row[key])) values.push(Number(row[key])); }));
+  const target = snapshot && snapshot.current_session ? snapshot.current_session.price_to_beat : null;
+  if (Number.isFinite(target)) values.push(Number(target));
+  if (values.length < 2) {
+    context.fillStyle = "#555";
+    context.font = "12px " + getComputedStyle(document.documentElement).getPropertyValue("--mono");
+    context.textAlign = "center";
+    context.fillText("Waiting for one-second price history", width / 2, height / 2);
+    return;
+  }
   let min = Math.min(...values), max = Math.max(...values);
-  if (max === min) { max += 1; min -= 1; }
-  const plotHeight = height * fraction;
-  context.beginPath(); context.strokeStyle = color; context.lineWidth = 2;
-  let started = false;
-  rows.forEach((row, index) => {
-    if (!Number.isFinite(row[key])) return;
-    const x = index * width / Math.max(1, rows.length - 1);
-    const y = top + plotHeight - (row[key] - min) * plotHeight / (max - min);
-    if (!started) { context.moveTo(x, y); started = true; } else context.lineTo(x, y);
-  });
-  context.stroke();
+  const padding = Math.max(1, (max - min) * .12);
+  min -= padding; max += padding;
+  const yFor = value => margin.top + plotHeight - (value - min) * plotHeight / (max - min);
+  const xFor = index => margin.left + index * plotWidth / Math.max(1, points.length - 1);
+
+  context.fillStyle = "#666";
+  context.font = "10px " + getComputedStyle(document.documentElement).getPropertyValue("--mono");
+  context.textAlign = "right";
+  for (let line = 0; line <= 5; line++) {
+    const value = max - line * (max - min) / 5;
+    context.fillText(`$${value.toLocaleString(undefined, {maximumFractionDigits: 2})}`, margin.left - 9, margin.top + line * plotHeight / 5 + 4);
+  }
+
+  if (Number.isFinite(target)) {
+    const y = yFor(target);
+    context.save();
+    context.setLineDash([7, 5]);
+    context.strokeStyle = "#ff4d5f";
+    context.lineWidth = 1.4;
+    context.beginPath(); context.moveTo(margin.left, y); context.lineTo(width - margin.right, y); context.stroke();
+    context.restore();
+  }
+  if (keys.includes("binance_btc_usd")) drawChartSeries(context, points, "binance_btc_usd", "#ff9900", xFor, yFor);
+  if (keys.includes("chainlink_btc_usd")) drawChartSeries(context, points, "chainlink_btc_usd", "#4488ff", xFor, yFor);
 }
+
+function drawChartSeries(context, rows, key, color, xFor, yFor) {
+  if ((chartMode === "binance" && key !== "binance_btc_usd") || (chartMode === "chainlink" && key !== "chainlink_btc_usd")) return;
+  context.beginPath();
+  context.strokeStyle = color;
+  context.lineWidth = 2;
+  context.lineJoin = "round";
+  context.lineCap = "round";
+  let started = false;
+  let previousTimestamp = null;
+  rows.forEach((row, index) => {
+    if (!Number.isFinite(row[key])) { started = false; previousTimestamp = null; return; }
+    const timestamp = Number(row.timestamp_ms);
+    if (started && Number.isFinite(timestamp) && Number.isFinite(previousTimestamp) && (timestamp <= previousTimestamp || timestamp - previousTimestamp > 2500)) started = false;
+    const x = xFor(index), y = yFor(row[key]);
+    if (!started) { context.moveTo(x, y); started = true; } else { context.lineTo(x, y); }
+    previousTimestamp = Number.isFinite(timestamp) ? timestamp : null;
+  });
+  if (started) context.stroke();
+}
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (snapshot) drawChart(snapshot.price_history || []); }, 80);
+});
 
 function connectEvents() {
   events = new EventSource("/events");
-  events.onopen = () => { connected = true; $("connection-dot").classList.add("live"); $("connection-label").textContent = "Live"; };
+  events.onopen = () => {
+    connected = true;
+    setHeaderStatus("LOCAL", "warning");
+    updateTradeSelection();
+  };
   events.onmessage = event => { try { render(JSON.parse(event.data)); } catch (_) {} };
-  events.onerror = () => { connected = false; $("connection-dot").classList.remove("live"); $("connection-label").textContent = "Reconnecting"; document.querySelectorAll("[data-side]").forEach(button => button.disabled = true); };
+  events.onerror = () => {
+    connected = false;
+    setHeaderStatus("RECONNECTING");
+    updateTradeSelection();
+  };
 }
 
 async function authenticateDashboard() {
@@ -404,10 +1383,11 @@ async function authenticateDashboard() {
     ? {method: "POST", headers: {"Authorization": `Bearer ${accessToken}`}}
     : {method: "GET"};
   const response = await fetch("/_auth/session", options);
-  if (!response.ok) {
-    throw new Error("Dashboard access expired. Open the current localhost link printed by PolyTread.");
-  }
+  if (!response.ok) throw new Error("Dashboard access expired or was not established.");
   dashboardAuthenticated = true;
+  $("dashboard-app").classList.remove("locked");
+  $("access-gate").hidden = true;
+  setHeaderStatus("CONNECTING");
   connectCommands();
   connectEvents();
 }
@@ -416,9 +1396,9 @@ renderNominals();
 authenticateDashboard().catch(error => {
   connected = false;
   dashboardAuthenticated = false;
-  $("connection-label").textContent = "Access required";
-  $("trade-notice").textContent = error.message;
-  $("claim-status").textContent = error.message;
+  setHeaderStatus("ACCESS");
+  $("access-title").textContent = "Dashboard access required";
+  $("access-message").textContent = `${error.message} Return to the terminal running PolyTread and open its complete current localhost link.`;
 });
 </script>
 </body>

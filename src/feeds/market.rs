@@ -8,7 +8,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, warn};
 
 use crate::config::MARKET_WS_URL;
-use crate::state::{AppEvent, FeedKind, FeedStatusUpdate, MarketTick, now_ms};
+use crate::state::{AppEvent, FeedKind, FeedStatusUpdate, MarketTick, OrderLevel, now_ms};
 
 pub async fn run(
     tx: mpsc::Sender<AppEvent>,
@@ -180,6 +180,8 @@ impl NumericField {
 struct RawOrderLevel {
     #[serde(default)]
     price: Option<NumericField>,
+    #[serde(default)]
+    size: Option<NumericField>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -192,10 +194,18 @@ struct RawMarketEvent {
     price: Option<NumericField>,
     #[serde(default)]
     last_trade_price: Option<NumericField>,
+    #[serde(default)]
+    size: Option<NumericField>,
+    #[serde(default)]
+    side: Option<String>,
     #[serde(default, alias = "bestBid")]
     best_bid: Option<NumericField>,
     #[serde(default, alias = "bestAsk")]
     best_ask: Option<NumericField>,
+    #[serde(default)]
+    tick_size: Option<NumericField>,
+    #[serde(default)]
+    new_tick_size: Option<NumericField>,
     #[serde(default)]
     bids: Vec<RawOrderLevel>,
     #[serde(default)]
@@ -265,6 +275,8 @@ fn build_market_tick(value: &RawMarketEvent, event_type: &str, recv_ms: i64) -> 
         asset_id: value.asset_id.clone(),
         event_type: event_type.to_string(),
         price,
+        size: value.size.as_ref().and_then(NumericField::as_f64),
+        side: value.side.clone(),
         best_bid: value
             .best_bid
             .as_ref()
@@ -275,7 +287,26 @@ fn build_market_tick(value: &RawMarketEvent, event_type: &str, recv_ms: i64) -> 
             .as_ref()
             .and_then(NumericField::as_f64)
             .or_else(|| best_level(&value.asks, false)),
+        tick_size: value
+            .new_tick_size
+            .as_ref()
+            .and_then(NumericField::as_f64)
+            .or_else(|| value.tick_size.as_ref().and_then(NumericField::as_f64)),
+        bids: parse_levels(&value.bids),
+        asks: parse_levels(&value.asks),
     })
+}
+
+fn parse_levels(levels: &[RawOrderLevel]) -> Vec<OrderLevel> {
+    levels
+        .iter()
+        .filter_map(|level| {
+            let price = level.price.as_ref().and_then(NumericField::as_f64)?;
+            let size = level.size.as_ref().and_then(NumericField::as_f64)?;
+            (price.is_finite() && size.is_finite() && (0.0..=1.0).contains(&price) && size > 0.0)
+                .then_some(OrderLevel { price, size })
+        })
+        .collect()
 }
 
 fn best_level(levels: &[RawOrderLevel], highest: bool) -> Option<f64> {
@@ -317,6 +348,8 @@ mod tests {
         assert_eq!(tick.price, Some(0.64));
         assert_eq!(tick.best_bid, Some(0.63));
         assert_eq!(tick.best_ask, Some(0.65));
+        assert_eq!(tick.size, Some(42.0));
+        assert_eq!(tick.side.as_deref(), Some("BUY"));
     }
 
     #[test]
@@ -359,6 +392,7 @@ mod tests {
                         "type":"book",
                         "asset_id":"asset-book",
                         "timestamp":"1700000002000",
+                        "tick_size":"0.01",
                         "bids":[{"price":"0.41","size":"11.2"}],
                         "asks":[{"price":"0.59","size":"9.8"}]
                     }
@@ -371,5 +405,36 @@ mod tests {
         assert_eq!(tick.asset_id.as_deref(), Some("asset-book"));
         assert_eq!(tick.best_bid, Some(0.41));
         assert_eq!(tick.best_ask, Some(0.59));
+        assert_eq!(tick.tick_size, Some(0.01));
+        assert_eq!(
+            tick.bids,
+            vec![crate::state::OrderLevel {
+                price: 0.41,
+                size: 11.2
+            }]
+        );
+        assert_eq!(
+            tick.asks,
+            vec![crate::state::OrderLevel {
+                price: 0.59,
+                size: 9.8
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_market_ticks_reads_tick_size_changes() {
+        let ticks = parse_market_ticks(
+            r#"{
+                "event_type":"tick_size_change",
+                "asset_id":"asset-book",
+                "old_tick_size":"0.01",
+                "new_tick_size":"0.001",
+                "timestamp":"1700000002000"
+            }"#,
+        );
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].event_type, "tick_size_change");
+        assert_eq!(ticks[0].tick_size, Some(0.001));
     }
 }

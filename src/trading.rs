@@ -54,8 +54,10 @@ const POLYMARKET_CTF_EXCHANGE_V2_SPENDER: &str = "0xE111180000d2663C0091e4f40023
 const POLYMARKET_NEG_RISK_CTF_EXCHANGE_V2_SPENDER: &str =
     "0xe2222d279d744050d28e00520010520000310F59";
 const SHARE_SCALE: u32 = 2;
-const MIN_MARKETABLE_BUY_USD: f64 = 1.0;
+pub const MIN_BUY_ORDER_USD: f64 = 1.0;
+pub const MIN_MAKER_SESSION_REMAINING_MS: i64 = MAKER_GTD_EXPIRATION_LEAD_SECS * 1_000;
 const BALANCE_POLL_SECS: u64 = 2;
+pub const MAX_TRADING_BALANCE_AGE_MS: i64 = 10_000;
 const RETRY_ATTEMPTS: u8 = 2;
 const ORDER_RECONCILE_POLL_SECS: u64 = 1;
 const SUBMIT_LOCKOUT_MS: i64 = 1_500;
@@ -130,7 +132,7 @@ impl TradeSide {
 
 use zeroize::Zeroize;
 
-pub const NOMINAL_VALUES: &[f64] = &[0.5, 1.0, 2.0, 3.0, 4.0, 5.0];
+pub const NOMINAL_VALUES: &[f64] = &[1.0, 2.0, 3.0, 4.0, 5.0];
 
 pub struct TradingRuntimeConfig {
     pub signer_address: String,
@@ -360,31 +362,45 @@ impl TradingState {
         self.enabled
             && self.configured
             && self.selected_side.is_some()
-            && self.has_sufficient_allowance()
+            && self.buy_capacity_issue().is_none()
             && self.in_flight_intent.is_none()
     }
 
-    fn has_sufficient_allowance(&self) -> bool {
-        match self.selected_side {
-            Some(TradeSide::BuyUp | TradeSide::BuyDown) => self
-                .allowance_usdc
-                .is_none_or(|allowance| allowance + 1e-9 >= self.selected_nominal),
-            _ => true,
+    fn buy_capacity_issue(&self) -> Option<String> {
+        if !matches!(
+            self.selected_side,
+            Some(TradeSide::BuyUp | TradeSide::BuyDown)
+        ) {
+            return None;
         }
-    }
-
-    fn approval_required_message(&self) -> Option<String> {
-        match (self.selected_side, self.allowance_usdc) {
-            (Some(TradeSide::BuyUp | TradeSide::BuyDown), Some(allowance))
-                if allowance + 1e-9 < self.selected_nominal =>
-            {
-                Some(format!(
-                    "Approval required: pUSD allowance ${allowance:.2} < ${:.2}",
-                    self.selected_nominal
-                ))
-            }
-            _ => None,
+        if let Some(error) = self.balance_error.as_deref() {
+            return Some(format!("Balance check failed: {error}"));
         }
+        let Some(balance_updated_ms) = self.balance_updated_ms else {
+            return Some("Waiting for a fresh pUSD balance".to_string());
+        };
+        if !(0..=MAX_TRADING_BALANCE_AGE_MS).contains(&(now_ms() - balance_updated_ms)) {
+            return Some("Waiting for a fresh pUSD balance".to_string());
+        }
+        let Some(balance) = self.available_usdc else {
+            return Some("Waiting for a fresh pUSD balance".to_string());
+        };
+        let Some(allowance) = self.allowance_usdc else {
+            return Some("Waiting for a fresh pUSD trading approval".to_string());
+        };
+        if balance + 1e-9 < self.selected_nominal {
+            return Some(format!(
+                "Insufficient pUSD balance: ${balance:.2} < ${:.2}",
+                self.selected_nominal
+            ));
+        }
+        if allowance + 1e-9 < self.selected_nominal {
+            return Some(format!(
+                "Approval required: pUSD allowance ${allowance:.2} < ${:.2}",
+                self.selected_nominal
+            ));
+        }
+        None
     }
 
     fn update_ready_state(&mut self) {
@@ -394,9 +410,13 @@ impl TradingState {
             && self.selected_side.is_some()
             && self.in_flight_intent.is_none()
         {
-            if let Some(message) = self.approval_required_message() {
+            if let Some(message) = self.buy_capacity_issue() {
                 self.order_status = message;
-            } else if self.order_status.starts_with("Approval required:") {
+            } else if self.order_status.starts_with("Approval required:")
+                || self.order_status.starts_with("Insufficient pUSD balance:")
+                || self.order_status.starts_with("Balance check failed:")
+                || self.order_status.starts_with("Waiting for a fresh pUSD")
+            {
                 self.order_status = "Trading armed".to_string();
             }
         }
@@ -1598,12 +1618,12 @@ async fn execute_trade_intent(
 
     if matches!(intent.order_side, OrderSide::Buy)
         && matches!(intent.mechanism, TradingMechanism::FastTaker)
-        && intent.nominal_usd + f64::EPSILON < MIN_MARKETABLE_BUY_USD
+        && intent.nominal_usd + f64::EPSILON < MIN_BUY_ORDER_USD
     {
         return Err(anyhow!(
             "invalid amount for a marketable BUY order (${:.2}), min size: ${:.2}",
             intent.nominal_usd,
-            MIN_MARKETABLE_BUY_USD
+            MIN_BUY_ORDER_USD
         ));
     }
 
@@ -2547,6 +2567,45 @@ fn build_execution_plan(intent: &TradeIntent, book: &BookSnapshot) -> Result<Exe
     })
 }
 
+pub fn minimum_buy_nominal_usd(
+    best_ask: f64,
+    tick_size: f64,
+    minimum_order_size: f64,
+    mechanism: TradingMechanism,
+) -> Option<f64> {
+    if !best_ask.is_finite()
+        || !tick_size.is_finite()
+        || !minimum_order_size.is_finite()
+        || best_ask <= 0.0
+        || tick_size <= 0.0
+        || minimum_order_size <= 0.0
+    {
+        return None;
+    }
+    let raw_price = match mechanism {
+        TradingMechanism::FastTaker => best_ask + TAKER_HOLD_GUARD_TICKS * tick_size,
+        TradingMechanism::FastMaker => best_ask - MAKER_OFFSET,
+    };
+    let price = match mechanism {
+        TradingMechanism::FastTaker => {
+            snap_price_to_tick_up(raw_price.clamp(MIN_PRICE, MAX_PRICE), tick_size)
+        }
+        TradingMechanism::FastMaker => {
+            snap_price_to_tick(raw_price.clamp(MIN_PRICE, MAX_PRICE), tick_size)
+        }
+    };
+    let required_shares = (minimum_order_size * 100.0 - 1e-9).ceil() / 100.0;
+    let mut nominal = ((required_shares * price * 100.0) - 1e-9).ceil() / 100.0;
+    nominal = nominal.max(MIN_BUY_ORDER_USD);
+    for _ in 0..4 {
+        if truncate_to_scale(nominal / price, SHARE_SCALE) + 1e-9 >= minimum_order_size {
+            return Some(nominal);
+        }
+        nominal = truncate_to_scale(nominal + 0.01 + 1e-9, 2);
+    }
+    None
+}
+
 fn depth_worst_buy_price(levels: &[LiquidityLevel], required_quote: f64) -> Result<f64> {
     if !required_quote.is_finite() || required_quote <= 0.0 {
         return Err(anyhow!("invalid buy quote amount"));
@@ -3075,6 +3134,26 @@ mod tests {
     }
 
     #[test]
+    fn public_minimum_nominal_matches_execution_price_and_share_rules() {
+        assert_eq!(
+            minimum_buy_nominal_usd(0.55, 0.01, 5.0, TradingMechanism::FastTaker),
+            Some(2.81)
+        );
+        assert_eq!(
+            minimum_buy_nominal_usd(0.55, 0.01, 5.0, TradingMechanism::FastMaker),
+            Some(2.60)
+        );
+        assert_eq!(
+            minimum_buy_nominal_usd(0.46, 0.01, 5.0, TradingMechanism::FastTaker),
+            Some(2.35)
+        );
+        assert_eq!(
+            minimum_buy_nominal_usd(f64::NAN, 0.01, 5.0, TradingMechanism::FastTaker),
+            None
+        );
+    }
+
+    #[test]
     fn order_price_decimal_scale_matches_market_tick() {
         for (tick_size, price, expected_scale, expected) in [
             (0.1, 0.5, 1, "0.5"),
@@ -3298,7 +3377,36 @@ mod tests {
         state.set_side(TradeSide::BuyUp);
         assert!(!state.is_ready());
         state.set_configured(true);
+        assert!(!state.is_ready());
+        state.available_usdc = Some(5.0);
+        state.allowance_usdc = Some(5.0);
+        state.balance_updated_ms = Some(now_ms());
+        state.update_ready_state();
         assert!(state.is_ready());
+    }
+
+    #[test]
+    fn trading_state_fails_closed_without_fresh_buy_capacity() {
+        let mut state = TradingState::default();
+        state.set_configured(true);
+        state.toggle_enabled();
+        state.set_side(TradeSide::BuyDown);
+        assert!(!state.is_ready());
+        assert!(state.order_status.contains("fresh pUSD balance"));
+
+        state.available_usdc = Some(0.75);
+        state.allowance_usdc = Some(100.0);
+        state.balance_updated_ms = Some(now_ms());
+        state.update_ready_state();
+        assert!(!state.is_ready());
+        assert!(state.order_status.contains("Insufficient pUSD balance"));
+
+        state.available_usdc = Some(100.0);
+        state.allowance_usdc = Some(0.75);
+        state.balance_updated_ms = Some(now_ms());
+        state.update_ready_state();
+        assert!(!state.is_ready());
+        assert!(state.order_status.contains("Approval required"));
     }
 
     #[test]
